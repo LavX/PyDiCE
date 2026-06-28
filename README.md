@@ -24,6 +24,27 @@ The reverse-engineering work has established a few facts about the DiCE stack:
 The reverse-engineering notes live in
 [docs/dice-reversing.md](docs/dice-reversing.md).
 
+## Scope From VIDA Help
+
+`VIDA-Help-en-GB.pdf` confirms the diagnostic workflow we should mirror and
+the parts we can leave out.
+
+Keep:
+
+* connection setup and adapter detection
+* vehicle profile and VIN-oriented identification
+* diagnostics overview, DTC readout, DTC detail, fault trace, network status
+* vehicle communication views for parameters, activations, and programmed values
+* clear connection state and live diagnostic feedback in the UI
+
+Leave out:
+
+* work orders
+* software ordering and download flows
+* firmware updates and reprogramming
+* PIE, DMS, and Volvo back-office communication
+* report generation and other dealer-only service workflows
+
 ## What Works Today
 
 The repository already includes these pieces:
@@ -35,6 +56,8 @@ The repository already includes these pieces:
 * A recovered DiCE command table for `RawCan*`, `Iso15765*`, and system
   commands
 * DiCE installer extraction helpers for `SetupDiCE.exe`
+* A basic curses TUI for connection setup, vehicle profile, diagnostics, fault
+  trace, and DTC operations
 
 ## Commands
 
@@ -70,6 +93,12 @@ Read and clear Volvo DTCs on a supported CAN interface:
 ```sh
 python3 -m volvo_p3.cli read-dtc --interface socketcan --channel can0 --ecu ECM
 python3 -m volvo_p3.cli clear-dtc --interface socketcan --channel can0 --ecu ECM --yes
+```
+
+Launch the interactive terminal UI:
+
+```sh
+python3 -m volvo_p3.cli tui
 ```
 
 `socketcan` is Linux-only. On macOS, use the DiCE probing commands above or a
@@ -125,15 +154,22 @@ Recovered command IDs currently captured in code include:
 
 ## To-Dos
 
+* Extend the TUI's diagnostics views so network state and fault-trace output
+  are closer to VIDA's presentation.
+* Add clearer vehicle identification and module mapping in the TUI once real
+  captures from the XC60 are available.
 * Recover the payload layout for `RawCanInit`, `RawCanStart`, `RawCanSet`,
   and the corresponding ISO-TP commands.
 * Implement a native Python DiCE transport that can open the adapter directly
   on macOS.
 * Add a small DiCE smoke test that opens the device and round-trips one known
   command.
+* Add a TUI lane for DiCE-native transport once the command payloads are
+  recovered.
 * Map real Volvo response frames to human-readable DTC and module labels.
 * Add safer discovery logic for the 2013 XC60 module set.
-* Build a minimal command runner for cataloging and clearing fault codes.
+* Expand the TUI into a lightweight command runner for cataloging and clearing
+  fault codes.
 
 ## Project Notes
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
 import time
 from pathlib import Path
@@ -22,6 +24,7 @@ from .protocol import (
     is_response_to,
     parse_dtc_response,
 )
+from .tui import run_tui
 
 
 def add_bus_args(parser: argparse.ArgumentParser) -> None:
@@ -42,14 +45,15 @@ def cmd_probe_can(args: argparse.Namespace) -> int:
         return 1
 
     print(f"python-can: {can.__version__}")
-    print("available backend names:")
+    print("backends installed in python-can:")
     for backend in sorted(can.interface.BACKENDS):
         print(f"  {backend}")
 
     if args.detect:
-        print("detected configs:")
+        print("detected configs on this machine:")
         try:
-            configs = can.detect_available_configs()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                configs = can.detect_available_configs()
         except Exception as exc:
             print(f"  detection failed: {type(exc).__name__}: {exc}")
             return 1
@@ -207,6 +211,12 @@ def cmd_clear_dtc(args: argparse.Namespace) -> int:
         return 1
     finally:
         bus.close()
+    return 0
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    run_tui()
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -269,6 +279,9 @@ def build_parser() -> argparse.ArgumentParser:
     clear_dtc.add_argument("--timeout", type=float, default=1.0)
     clear_dtc.add_argument("--yes", action="store_true", help="required guard for clear operation")
     clear_dtc.set_defaults(func=cmd_clear_dtc)
+
+    tui = subparsers.add_parser("tui", help="launch the interactive Volvo P3 terminal UI")
+    tui.set_defaults(func=cmd_tui)
 
     return parser
 
