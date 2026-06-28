@@ -1,0 +1,104 @@
+;----------------------------------------------------------------------------------------------
+; DiceUsb.inf
+;
+; Copyright 2010 SETEK AB
+;
+; This file installs the DiceUsb driver for Windows XP SP2 (32bits) and Windows Vista (64bits)
+;-----------------------------------------------------------------------------------------------
+
+[Version]
+Signature="$WINDOWS NT$"
+Class="DiCE Hardware"
+ClassGuid={5FBFD5D3-FB7F-4A86-A492-8395EC7D50E7}
+Provider=%MSFT%
+DriverVer=01/31/2011,6.1.7600.16385
+CatalogFile.NTx86  = dicex86.cat
+CatalogFile.NTAMD64 = dicamd64.cat
+
+
+
+; ================= Class section =====================
+
+[ClassInstall32]
+Addreg=DiceClassReg     
+
+[DiceClassReg]
+HKR,,,0,"DiCE Hardware"
+HKR,,Icon,,-5
+
+
+; ================= Device section =====================
+
+[Manufacturer]
+%MfgName%=Microsoft,NTAMD64
+
+
+; For XP and later
+[Microsoft.NTAMD64]
+%USB\VID_17AA&PID_D1CE.DeviceDesc%=DiceUsb.Dev, USB\VID_17AA&PID_D1CE
+
+
+[DiceUsb.Dev.NT]
+CopyFiles=DiceUsb.Files.Ext
+
+
+[DiceUsb.Dev.NT.Services]
+AddService = DiceUsb, %SPSVCINST_ASSOCSERVICE%, DiceUsb.AddService
+
+[DiceUsb.AddService]
+DisplayName    = %DiceUsb.SvcDesc%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %10%\System32\Drivers\DiceUsb.sys
+LoadOrderGroup = Base
+
+[DiceUsb.Files.Ext]
+DiceUsb.sys
+
+[SourceDisksNames]
+1=%Disk_Description%,,,
+
+[SourceDisksFiles]
+DiceUsb.sys = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+;-------------- Coinstaller installation
+
+[DestinationDirs]
+CoInstaller_CopyFiles = 11
+
+[DiceUsb.Dev.NT.CoInstallers]
+AddReg=CoInstaller_AddReg
+CopyFiles=CoInstaller_CopyFiles
+
+[CoInstaller_CopyFiles]
+WdfCoInstaller01009.dll
+diceco1.dll
+
+[SourceDisksFiles]
+WdfCoInstaller01009.dll = 1
+diceco1.dll = 1
+
+[CoInstaller_AddReg]
+HKR,,CoInstallers32,0x00010000, "WdfCoInstaller01009.dll,WdfCoInstaller", "diceco1.dll,DiceCoInstaller"
+
+[DiceUsb.Dev.NT.Wdf]
+KmdfService = DiceUsb, DiceUsb_wdfsect
+
+[DiceUsb_wdfsect]
+KmdfLibraryVersion = 1.9
+
+;---------------------------------------------------------------;
+
+[Strings]
+MSFT="SETEK AB"
+MfgName="SETEK AB"
+Disk_Description="DiCE USB Installation Disk"
+USB\VID_17AA&PID_D1CE.DeviceDesc="DiCE USB Driver"
+DiceUsb.SvcDesc="DiCE USB Driver"
+ClassName="DiCE Hardware"
+SPSVCINST_ASSOCSERVICE= 0x00000002
+

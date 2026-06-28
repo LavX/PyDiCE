@@ -50,7 +50,8 @@ class OBD(object):
     """
 
     def __init__(self, portstr=None, baudrate=None, protocol=None, fast=True,
-                 timeout=0.1, check_voltage=True, start_low_power=False):
+                 timeout=0.1, check_voltage=True, start_low_power=False,
+                 load_commands=True):
         self.interface = None
         self.supported_commands = set(commands.base_commands())
         self.fast = fast  # global switch for disabling optimizations
@@ -62,7 +63,8 @@ class OBD(object):
         logger.info("======================= python-OBD (v%s) =======================" % __version__)
         self.__connect(portstr, baudrate, protocol,
                        check_voltage, start_low_power)  # initialize by connecting and loading sensors
-        self.__load_commands()  # try to load the car's supported commands
+        if load_commands:
+            self.__load_commands()  # try to load the car's supported commands
         logger.info("===================================================================")
 
     def __connect(self, portstr, baudrate, protocol, check_voltage,
@@ -166,7 +168,8 @@ class OBD(object):
 
         if self.interface is not None:
             logger.info("Closing connection")
-            self.__set_header(ECU_HEADER.ENGINE)
+            if self.interface.status() == OBDStatus.CAR_CONNECTED:
+                self.__set_header(ECU_HEADER.ENGINE)
             self.interface.close()
             self.interface = None
 
@@ -284,6 +287,10 @@ class OBD(object):
         cmd_string = self.__build_command_string(cmd)
         messages = self.interface.send_and_parse(cmd_string)
 
+        if not messages:
+            logger.info("No valid OBD Messages returned")
+            return OBDResponse()
+
         # if we're sending a new command, note it
         # first check that the current command WASN'T sent as an empty CR
         # (CR is added by the ELM327 class)
@@ -294,10 +301,6 @@ class OBD(object):
         # log it, so we can specify it next time
         if cmd not in self.__frame_counts:
             self.__frame_counts[cmd] = sum([len(m.frames) for m in messages])
-
-        if not messages:
-            logger.info("No valid OBD Messages returned")
-            return OBDResponse()
 
         return cmd(messages)  # compute a response object
 

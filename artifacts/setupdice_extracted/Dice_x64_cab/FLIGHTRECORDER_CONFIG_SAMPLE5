@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+  <!-- This is a config file for Y286, P1, P2X 2005- vehicles with 2 can buses -->
+  <!-- Example file //mash Sep 2006 -->
+  <!-- Fileversion: 4.5 -->
+
+  <cfg-type>Y286,P1,P2X 2005-</cfg-type>
+  <id>Y286,P1,P2X 2005-</id>
+  <pretrigtime>20000</pretrigtime>
+  <posttrigtime>20000</posttrigtime>
+  <sleeptimeout>60000</sleeptimeout>
+
+  <trigger>
+    <action>logdata</action>
+    <source>usbbutton</source>
+    <edge>closing</edge>
+    <msg>1234 00 11 22 33 44 55</msg>
+  </trigger>
+
+  <channel>
+    <!--This is a medium speed channel.-->
+    <source>canms</source>
+    <baudrate>125000</baudrate>
+    <samplepoint>68</samplepoint>
+    <sjw>35</sjw>
+    <samples>3</samples>
+    <silentmode>true</silentmode>
+    <filter>
+      <!--This is a 29 bit all pass filter on the ms channel.-->
+      <type>pass</type>
+      <mask>00000000</mask>
+      <pattern>00000000</pattern>
+    </filter>
+    <filter>
+      <!--This is a 11 bit all pass filter on the ms channel.-->
+      <type>pass</type>
+      <mask>000</mask>
+      <pattern>000</pattern>
+    </filter>
+  </channel>
+  <channel>
+    <!--This is a high speed channel.-->
+    <source>canhs</source>
+    <baudrate>500000</baudrate>
+    <samplepoint>80</samplepoint>
+    <sjw>20</sjw>
+    <silentmode>true</silentmode>
+    <filter>
+      <!--this is a 29bit all pass filter on the hs channel.-->
+      <type>pass</type>
+      <mask>00000000</mask>
+      <pattern>00000000</pattern>
+    </filter>
+    <filter>
+      <!--this is a 11bit all pass filter on the hs channel.-->
+      <type>pass</type>
+      <mask>000</mask>
+      <pattern>000</pattern>
+    </filter>
+  </channel>
+</config>

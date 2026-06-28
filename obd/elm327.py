@@ -32,6 +32,7 @@
 
 import re
 import serial
+import sys
 import time
 import logging
 from .protocols import *
@@ -104,7 +105,8 @@ class ELM327:
     # We check the two default baud rates first, then go fastest to
     # slowest, on the theory that anyone who's using a slow baud rate is
     # going to be less picky about the time required to detect it.
-    _TRY_BAUDS = [38400, 9600,  115200, 57600, 19200, 14400, 3000000, 2000000, 1000000, 250000, 230400, 128000, 500000, 460800, 500000, 576000, 921600, 1000000, 1152000, 1500000, 2000000, 2500000, 3000000, 3500000, 4000000]
+    _TRY_BAUDS = [38400, 9600, 115200, 57600, 19200, 14400, 230400, 250000, 460800, 500000, 576000, 921600, 1000000]
+    _MACOS_BLUETOOTH_TRY_BAUDS = [38400, 9600, 115200, 57600, 19200]
 
     def __init__(self, portname, baudrate, protocol, timeout,
                  check_voltage=False, start_low_power=False):
@@ -366,7 +368,7 @@ class ELM327:
         #print(self.__port.write_timeout)
         self.__port.write_timeout = 0.1
         #print(self.__port.write_timeout)
-        for baud in self._TRY_BAUDS:
+        for baud in self.__baudrate_candidates():
             print('Baudrate ' + str(baud))
             try:
                 self.__port.baudrate = baud
@@ -376,9 +378,17 @@ class ELM327:
 
             print("Trying baudrate "+str(baud))
             print('flushing input')
-            self.__port.flushInput()
+            try:
+                self.__port.flushInput()
+            except serial.serialutil.SerialException:
+                print('Could not flush input')
+                continue
             print('flushing output')
-            self.__port.flushOutput()
+            try:
+                self.__port.flushOutput()
+            except serial.serialutil.SerialException:
+                print('Could not flush output')
+                continue
 
             # Send a nonsense command to get a prompt back from the scanner
             # (an empty command runs the risk of repeating a dangerous command)
@@ -402,9 +412,17 @@ class ELM327:
                 print('Timeout')
             """
             print('flushing')
-            self.__port.flush()
+            try:
+                self.__port.flush()
+            except serial.serialutil.SerialException:
+                print('Could not flush port')
+                continue
             print('reading')
-            response = self.__port.read(1024)
+            try:
+                response = self.__port.read(1024)
+            except serial.serialutil.SerialException:
+                print('Could not read port')
+                continue
             logger.debug("Response from baud %d: %s" % (baud, repr(response)))
             print("Response from baud %d: %s" % (baud, repr(response)))
             # watch for the prompt character
@@ -424,6 +442,11 @@ class ELM327:
         except serial.serialutil.SerialException:
             return False
         return False
+
+    def __baudrate_candidates(self):
+        if sys.platform.startswith('darwin') and self.port_name().startswith('/dev/cu.'):
+            return self._MACOS_BLUETOOTH_TRY_BAUDS
+        return self._TRY_BAUDS
 
     def __isok(self, lines, expectEcho=False):
         if not lines:
@@ -534,17 +557,19 @@ class ELM327:
             attributes to unconnected states.
         """
 
+        was_car_connected = self.__status == OBDStatus.CAR_CONNECTED
         self.__status = OBDStatus.NOT_CONNECTED
         self.__protocol = None
 
         if self.__port is not None:
             logger.info("closing port")
             print("closing port")
-            try:
-                self.__port.write_timeout = 0.1
-                self.__write(b"ATZ")
-            except:
-                pass
+            if was_car_connected:
+                try:
+                    self.__port.write_timeout = 0.1
+                    self.__write(b"ATZ")
+                except:
+                    pass
             try:
                 self.__port.close()
                 self.__port = None

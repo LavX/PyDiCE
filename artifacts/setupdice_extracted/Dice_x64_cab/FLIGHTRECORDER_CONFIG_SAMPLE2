@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<config>
+  <!-- This is a config file for P2X -2004 vehicles with diagnostic relay and 2 CAN buses sending a key request -->
+  <!-- to determine when to go to sleep 2006 -->
+  <!-- Example file //mash Sep 2006 -->
+  <!-- Fileversion: 4.5 -->
+
+  <cfg-type>P2X -2004, Key trigger</cfg-type>
+  <id>P2X -2004,Key </id>
+  <pretrigtime>20000</pretrigtime>
+  <posttrigtime>20000</posttrigtime>
+  <sleeptimeout>60000</sleeptimeout>
+  <wakeperiod>60000</wakeperiod>
+  <waketimeout>1000</waketimeout>
+
+  <trigger>
+    <action>logdata</action>
+    <source>usbbutton</source>
+    <edge>closing</edge>
+    <msg>1234 00 11 22 33 44 55</msg>
+  </trigger>
+  <trigger>
+    <action>stopperiodics</action>
+    <source>can</source>
+    <period>65000</period>
+    <timeout>130000</timeout>
+    <type>pass</type>
+    <mask>00000000 FF FF FF FF FF FF 00 00</mask>
+    <pattern>00800003 CD 40 E6 1A 04 18 00 00</pattern>
+  </trigger>
+
+  <channel>
+    <!--This is a medium speed channel.-->
+    <source>canms</source>
+    <baudrate>125000</baudrate>
+    <samplepoint>68</samplepoint>
+    <sjw>35</sjw>
+    <samples>3</samples>
+    <filter>
+      <!--This is a 29 bit all pass filter on the ms channel.-->
+      <type>pass</type>
+      <mask>00000000</mask>
+      <pattern>00000000</pattern>
+    </filter>
+    <filter>
+      <!--This is a 11 bit all pass filter on the ms channel.-->
+      <type>pass</type>
+      <mask>000</mask>
+      <pattern>000</pattern>
+    </filter>
+    <periodic>
+      <!--This is a periodic key pos question message on hs channel. -->
+      <msg>000ffffe cd 40 a6 1a 04 01 00 00</msg>
+      <period>60000</period>
+    </periodic>
+  </channel>
+  <channel>
+    <!--This is a high speed channel.-->
+    <source>canhs</source>
+    <baudrate>250000</baudrate>
+    <samplepoint>80</samplepoint>
+    <sjw>20</sjw>
+    <filter>
+      <!--this is a 29bit all pass filter on the hs channel.-->
+      <type>pass</type>
+      <mask>00000000</mask>
+      <pattern>00000000</pattern>
+    </filter>
+    <filter>
+      <!--this is a 11bit all pass filter on the hs channel.-->
+      <type>pass</type>
+      <mask>000</mask>
+      <pattern>000</pattern>
+    </filter>
+  </channel>
+  <channel>
+    <!--this is a k-line channel-->
+    <source>iso9141</source>
+    <baudrate>10400</baudrate>
+    <pin>carb7</pin>
+    <periodic>
+      <!--This is a periodic relay opening message on 9141 channel. -->
+      <msg>84 40 13 B2 F0 03</msg>
+      <period>5000</period>
+    </periodic>
+  </channel>
+</config>

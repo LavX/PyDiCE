@@ -37,6 +37,7 @@ import string
 import sys
 
 import serial
+from serial.tools import list_ports
 
 logger = logging.getLogger(__name__)
 
@@ -180,16 +181,25 @@ def scan_serial():
 
     elif sys.platform.startswith('darwin'):
         exclude = [
+            '/dev/cu.Bluetooth-Incoming-Port',
+            '/dev/cu.Bluetooth-Modem',
             '/dev/tty.Bluetooth-Incoming-Port',
             '/dev/tty.Bluetooth-Modem'
         ]
         #possible_ports += glob.glob("/dev/ttys00[0-9]*")  # for obdsim
-        possible_ports += [port for port in glob.glob('/dev/tty.*') if port not in exclude]
+        listed_ports = [port.device for port in list_ports.comports()]
+        possible_ports += [port for port in listed_ports if port.startswith('/dev/cu.') and port not in exclude]
+        possible_ports += [port for port in glob.glob('/dev/cu.*') if port not in exclude]
 
     # possible_ports += glob.glob('/dev/pts/[0-9]*') # for obdsim
 
-    for port in possible_ports:
-        if try_port(port):
+    for port in dict.fromkeys(possible_ports):
+        if sys.platform.startswith('darwin'):
+            # Opening Bluetooth serial devices during discovery can start a
+            # connection attempt. On macOS, list the outgoing callout devices
+            # and let the real connection path open only the selected port.
+            available.append(port)
+        elif try_port(port):
             available.append(port)
     print('Available ports: '+str(available))
     return available
