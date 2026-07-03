@@ -61,6 +61,18 @@ The repository already includes these pieces:
 
 ## Commands
 
+Open the setup launcher that presents the legacy pyOBD and ADIV/Volvo tools:
+
+```sh
+python3 launcher.py
+```
+
+If the environment is installed, the launcher is also available as:
+
+```sh
+pyobd-launcher
+```
+
 List the built-in ECU address hints:
 
 ```sh
@@ -99,6 +111,7 @@ Launch the interactive terminal UI:
 
 ```sh
 python3 -m volvo_p3.cli tui
+python3 tui.py
 ```
 
 `socketcan` is Linux-only. On macOS, use the DiCE probing commands above or a

@@ -7,6 +7,8 @@ dependencies = [
     "pint==0.20.1",
     "pillow==10.4.0",
     "six==1.16.0",
+    "python-can~=4.4",
+    "pyusb~=1.3",
 ]
 
 name = "pyobd2"
@@ -20,3 +22,7 @@ requires-python = ">=3.8"
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[project.scripts]
+volvo-p3 = "volvo_p3.cli:main"
+pyobd-launcher = "launcher:main"
