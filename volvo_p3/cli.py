@@ -221,8 +221,12 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
     output = args.output or Path("reports") / (datetime.now().strftime("dice-scan-%Y%m%d-%H%M%S-%f") + ".json")
     if output.exists():
         raise ValueError(f"output already exists: {output}")
-    if args.save_profile and (args.save_profile.exists() or args.save_profile.resolve() == output.resolve()):
-        raise ValueError("saved profile must be a new file distinct from the report")
+    if args.save_profile and args.save_profile.resolve() == output.resolve():
+        raise ValueError("profile and report must use different paths")
+    if args.save_profile and args.save_profile.exists() and not args.replace_profile:
+        raise ValueError(f"profile already exists: {args.save_profile}. Use --profile {args.save_profile} to read it, or --replace-profile with --save-profile to refresh it.")
+    if args.replace_profile and not args.save_profile:
+        raise ValueError("--replace-profile requires --save-profile")
     output.parent.mkdir(parents=True, exist_ok=True)
     report = {"started_at": datetime.now(timezone.utc).isoformat(),
               "scope": "11-bit UDS, 500 kbit/s, current DiCE CAN channel",
@@ -263,13 +267,16 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
         save()
     if args.save_profile:
         responded = {m["request_id"] for m in report["modules"]
-                     if m.get("raw_payload_hex") or m.get("status") in ("ok", "negative_response", "response_pending_timeout")}
+                     if m.get("raw_payload_hex") or m.get("status") in ("ok", "negative_response", "response_pending_timeout")
+                     or any(e.get("direction") == "rx" and e.get("matched") for e in m.get("evidence", []))}
         profile = {"name": "Discovered UDS modules", "modules": [
             {"name": t.name, "request_id": f"0x{t.request_id:03X}", "response_id": f"0x{t.response_id:03X}"}
             for t in targets if t.request_id in responded]}
         if profile["modules"]:
             args.save_profile.parent.mkdir(parents=True, exist_ok=True)
-            args.save_profile.write_text(json.dumps(profile, indent=2) + "\n")
+            temporary_profile = args.save_profile.with_suffix(args.save_profile.suffix + ".tmp")
+            temporary_profile.write_text(json.dumps(profile, indent=2) + "\n")
+            temporary_profile.replace(args.save_profile)
             print(f"Profile: {args.save_profile} ({len(profile['modules'])} responding targets)")
         else:
             print("No responding targets; no reusable profile written.")
@@ -430,6 +437,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--timeout", type=float, default=1.5)
     scan.add_argument("--output", type=Path, help="new JSON report path, default reports/dice-scan-TIMESTAMP.json")
     scan.add_argument("--save-profile", type=Path, help="save responding targets to a new reusable profile")
+    scan.add_argument("--replace-profile", action="store_true", help="replace an existing saved profile after discovery")
     scan.add_argument("--all-records", action="store_true", help="also display monitors with no fault bits; JSON always includes every record")
     scan.set_defaults(func=cmd_dice_scan)
 

@@ -38,3 +38,9 @@ Request IDs must be within `0x700..0x7F7`; response IDs can use the full 11-bit 
 `dice-info` reads firmware information and supply voltage. The captured firmware build is `Aug 22 2011 09:03:43`. Voltage units are not independently confirmed.
 
 The native USB framing and command layouts were recovered from `artifacts/setupdice_extracted/Dice_x64_cab/DiCE32_x64.dll`. The older `docs/dice-reversing.md` contains incorrect framing and command-number assumptions; its 1D prefix is not the outer marker. The live raw CAN path uses commands `0x80` and `0x81` as described above.
+
+## Discovery and repeated reads
+
+`dice-scan --discover --timeout 0.5 --save-profile reports/my-car.json` saves all responding targets, including incomplete responses. Read that profile with `dice-scan --profile reports/my-car.json --timeout 1.5`. Omit `--all-records` for a concise fault/history list. To deliberately refresh an existing profile, add `--replace-profile` to the discovery command.
+
+The initial response timeout is independent of ISO-TP assembly: after a first frame, each consecutive frame has a one-second window, bounded by ten seconds total transfer time. An incomplete response remains distinct from an empty DTC list.

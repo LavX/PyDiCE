@@ -18,6 +18,8 @@ SUBFUNCTION_REPORT_DTC_BY_STATUS_MASK = 0x02
 DTC_STATUS_MASK = 0xFF
 MAX_ISOTP_PAYLOAD = 4095
 MAX_RESPONSE_PENDING_WAIT = 5.0
+MAX_TRANSFER_WAIT = 10.0
+CONSECUTIVE_FRAME_TIMEOUT = 1.0
 MAX_EVIDENCE_FRAMES = 4096
 
 _DTC_STATUS_BITS = (
@@ -208,6 +210,7 @@ def _extract_payload(
     initial_deadline = start_time + timeout
     response_pending_deadline = start_time + MAX_RESPONSE_PENDING_WAIT
     deadline = initial_deadline
+    transfer_deadline = None
     expected_sequence = 1
     total_length: Optional[int] = None
     assembled = bytearray()
@@ -294,6 +297,9 @@ def _extract_payload(
                 return issue("malformed", "truncated_negative_response_header")
             if _response_prefix_matches(initial) is False:
                 continue
+            if transfer_deadline is None:
+                transfer_deadline = time.monotonic() + MAX_TRANSFER_WAIT
+            deadline = min(transfer_deadline, time.monotonic() + CONSECUTIVE_FRAME_TIMEOUT)
             total_length = frame_length
             assembled = bytearray(initial)
             expected_sequence = 1
@@ -317,6 +323,7 @@ def _extract_payload(
             if len(data) - 1 < required_bytes:
                 return issue("malformed", "truncated_consecutive_frame")
             assembled.extend(data[1 : 1 + remaining_payload])
+            deadline = min(transfer_deadline, time.monotonic() + CONSECUTIVE_FRAME_TIMEOUT)
             expected_sequence = (expected_sequence + 1) & 0x0F
             if len(assembled) >= total_length:
                 payload = bytes(assembled[:total_length])
