@@ -1,3 +1,7 @@
+> Historical notes. The framing and decimal command IDs below were corrected
+> by live hardware work in [native-dice.md](native-dice.md). Use that document
+> and the corrected command table for native USB work.
+
 # DiCE Native Driver Notes
 
 Goal: implement a Python-native DiCE transport with no Windows, VIDA runtime, or

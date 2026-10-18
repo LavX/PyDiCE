@@ -1,0 +1,232 @@
+{
+  "scan": {
+    "protocol": "ISO-TP over 11-bit CAN",
+    "discovery": {
+      "status": "ok",
+      "request_id": 2015,
+      "request_id_hex": "0x7DF",
+      "responders": [
+        {
+          "response_id": 2024,
+          "response_id_hex": "0x7E8",
+          "status": "ok",
+          "supported_pids": [
+            1,
+            4,
+            5,
+            11,
+            12,
+            13,
+            15,
+            16,
+            17,
+            19,
+            28,
+            31,
+            32
+          ],
+          "supported_pids_complete": true,
+          "raw_payload_hex": "41 00 98 3B A0 13",
+          "evidence_indexes": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "response_id": 2025,
+          "response_id_hex": "0x7E9",
+          "status": "ok",
+          "supported_pids": [
+            1,
+            5,
+            12,
+            13,
+            28,
+            31,
+            32
+          ],
+          "supported_pids_complete": true,
+          "raw_payload_hex": "41 00 88 18 00 13",
+          "evidence_indexes": [
+            0,
+            1,
+            2
+          ]
+        }
+      ]
+    },
+    "ecus": [
+      {
+        "response_id": 2024,
+        "response_id_hex": "0x7E8",
+        "modes": {
+          "03": {
+            "status": "ok",
+            "dtcs": [],
+            "raw_payload_hex": "43 00",
+            "evidence_indexes": [
+              3,
+              4,
+              5
+            ]
+          },
+          "07": {
+            "status": "ok",
+            "dtcs": [],
+            "raw_payload_hex": "47 00",
+            "evidence_indexes": [
+              6,
+              7,
+              8
+            ]
+          },
+          "0A": {
+            "status": "no_response",
+            "dtcs": null,
+            "evidence_indexes": [
+              9,
+              10
+            ]
+          }
+        }
+      },
+      {
+        "response_id": 2025,
+        "response_id_hex": "0x7E9",
+        "modes": {
+          "03": {
+            "status": "ok",
+            "dtcs": [],
+            "raw_payload_hex": "43 00",
+            "evidence_indexes": [
+              3,
+              4,
+              5
+            ]
+          },
+          "07": {
+            "status": "ok",
+            "dtcs": [],
+            "raw_payload_hex": "47 00",
+            "evidence_indexes": [
+              6,
+              7,
+              8
+            ]
+          },
+          "0A": {
+            "status": "ok",
+            "dtcs": [],
+            "raw_payload_hex": "4A 00",
+            "evidence_indexes": [
+              9,
+              10
+            ]
+          }
+        }
+      }
+    ],
+    "evidence": [
+      {
+        "phase": "discovery",
+        "direction": "tx",
+        "kind": "request",
+        "arbitration_id": 2015,
+        "arbitration_id_hex": "0x7DF",
+        "is_extended_id": false,
+        "data_hex": "02 01 00 00 00 00 00 00"
+      },
+      {
+        "phase": "discovery",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2025,
+        "arbitration_id_hex": "0x7E9",
+        "is_extended_id": false,
+        "data_hex": "06 41 00 88 18 00 13 00"
+      },
+      {
+        "phase": "discovery",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2024,
+        "arbitration_id_hex": "0x7E8",
+        "is_extended_id": false,
+        "data_hex": "06 41 00 98 3B A0 13 00"
+      },
+      {
+        "phase": "03",
+        "direction": "tx",
+        "kind": "request",
+        "arbitration_id": 2015,
+        "arbitration_id_hex": "0x7DF",
+        "is_extended_id": false,
+        "data_hex": "01 03 00 00 00 00 00 00"
+      },
+      {
+        "phase": "03",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2025,
+        "arbitration_id_hex": "0x7E9",
+        "is_extended_id": false,
+        "data_hex": "02 43 00 00 00 00 00 00"
+      },
+      {
+        "phase": "03",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2024,
+        "arbitration_id_hex": "0x7E8",
+        "is_extended_id": false,
+        "data_hex": "02 43 00 00 00 00 00 00"
+      },
+      {
+        "phase": "07",
+        "direction": "tx",
+        "kind": "request",
+        "arbitration_id": 2015,
+        "arbitration_id_hex": "0x7DF",
+        "is_extended_id": false,
+        "data_hex": "01 07 00 00 00 00 00 00"
+      },
+      {
+        "phase": "07",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2024,
+        "arbitration_id_hex": "0x7E8",
+        "is_extended_id": false,
+        "data_hex": "02 47 00 00 00 00 00 00"
+      },
+      {
+        "phase": "07",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2025,
+        "arbitration_id_hex": "0x7E9",
+        "is_extended_id": false,
+        "data_hex": "02 47 00 00 00 00 00 00"
+      },
+      {
+        "phase": "0A",
+        "direction": "tx",
+        "kind": "request",
+        "arbitration_id": 2015,
+        "arbitration_id_hex": "0x7DF",
+        "is_extended_id": false,
+        "data_hex": "01 0A 00 00 00 00 00 00"
+      },
+      {
+        "phase": "0A",
+        "direction": "rx",
+        "kind": "response",
+        "arbitration_id": 2025,
+        "arbitration_id_hex": "0x7E9",
+        "is_extended_id": false,
+        "data_hex": "02 4A 00 00 00 00 00 00"
+      }
+    ]
+  }
+}

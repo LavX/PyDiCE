@@ -6,10 +6,13 @@ import curses
 import contextlib
 import io
 import os
+import shlex
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 if __package__ in (None, ""):
@@ -91,6 +94,7 @@ class VolvoTuiApp:
         self.sections = self._build_sections()
         self.section_index = 0
         self.action_index = 0
+        self._menu_scroll = 0
         self.logs: list[str] = []
         self.status = "ready"
         self.running = False
@@ -138,6 +142,36 @@ class VolvoTuiApp:
                     ActionSpec("Set VIN", "Store a manual VIN for the current session.", self._set_vin, (FieldSpec("vin", "VIN", self.vehicle.vin or ""),)),
                     ActionSpec("List Modules", "Show the built-in Volvo ECU hints.", self._list_modules),
                     ActionSpec("Profile Summary", "Show the current manual vehicle profile state.", self._profile_summary),
+                ),
+            ),
+            SectionSpec(
+                "Native DiCE",
+                (
+                    ActionSpec(
+                        "Scan known modules",
+                        "Read DTCs from the documented V60 D6 modules on the native 500 kbit/s CAN channel.",
+                        self._native_known_scan,
+                        (FieldSpec("native_timeout", "Timeout per module in seconds", "1.5"),),
+                    ),
+                    ActionSpec(
+                        "Discover module IDs",
+                        "Probe read-only UDS DTC responses from 11-bit IDs on the native 500 kbit/s CAN channel.",
+                        self._native_discover,
+                        (
+                            FieldSpec("native_start", "First request ID", "0x700"),
+                            FieldSpec("native_end", "Last request ID", "0x7F7"),
+                            FieldSpec("native_timeout", "Timeout per ID in seconds", "1.5"),
+                        ),
+                    ),
+                    ActionSpec(
+                        "Scan saved profile",
+                        "Read DTCs from module IDs in a saved native DiCE profile.",
+                        self._native_profile_scan,
+                        (
+                            FieldSpec("native_profile", "Profile JSON path", ""),
+                            FieldSpec("native_timeout", "Timeout per module in seconds", "1.5"),
+                        ),
+                    ),
                 ),
             ),
             SectionSpec(
@@ -228,6 +262,8 @@ class VolvoTuiApp:
         height, width = stdscr.getmaxyx()
         row = max(0, height - 2)
         prompt_text = f"{prompt} [{default}]: " if default else f"{prompt}: "
+        if len(prompt_text) >= width - 8:
+            prompt_text = f"{prompt}: "
         stdscr.move(row, 0)
         stdscr.clrtoeol()
         stdscr.addnstr(row, 0, prompt_text, max(0, width - 1))
@@ -276,6 +312,95 @@ class VolvoTuiApp:
                 bitrate=_optional_int(values.get("bitrate", self.transport.bitrate and str(self.transport.bitrate))),
             )
         )
+
+    def _run_native_scan(self, options: list[str], *, profile_path: Path | None = None) -> list[str]:
+        # Import only when selected: the CLI also imports this module for its TUI command.
+        if __package__ in (None, ""):
+            from volvo_p3.cli import main as cli_main
+        else:
+            from .cli import main as cli_main
+
+        reports = Path(__file__).resolve().parents[1] / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        output = reports / f"dice-scan-{stamp}.json"
+        argv = ["dice-scan", *options, "--output", str(output)]
+        if profile_path is not None:
+            argv.extend(("--save-profile", str(profile_path)))
+        self._append_log(f"Command: {shlex.join(argv)}")
+
+        class LiveOutput:
+            def __init__(self, prefix: str = "") -> None:
+                self.prefix = prefix
+                self.pending = ""
+
+            def write(self, text: str) -> int:
+                self.pending += text
+                while "\n" in self.pending:
+                    line, self.pending = self.pending.split("\n", 1)
+                    self._emit(line)
+                return len(text)
+
+            def flush(self) -> None:
+                pass
+
+            def finish(self) -> None:
+                if self.pending:
+                    self._emit(self.pending)
+                    self.pending = ""
+
+            def _emit(self, line: str) -> None:
+                self_app._append_log(f"{self.prefix}{line}")
+
+        self_app = self
+        captured_stdout = LiveOutput()
+        captured_stderr = LiveOutput("stderr: ")
+        try:
+            with contextlib.redirect_stdout(captured_stdout), contextlib.redirect_stderr(captured_stderr):
+                exit_code = cli_main(argv)
+        except SystemExit as exc:
+            exit_code = exc.code if isinstance(exc.code, int) else 1
+        finally:
+            captured_stdout.finish()
+            captured_stderr.finish()
+
+        if exit_code:
+            raise RuntimeError(f"native DiCE scan exited with code {exit_code}")
+        lines = []
+        lines.append(f"Saved scan: {output}")
+        if profile_path is not None and profile_path.exists():
+            lines.append(f"Saved module profile: {profile_path}")
+            self._last_values["native_profile"] = str(profile_path)
+        return lines
+
+    @staticmethod
+    def _native_timeout(values: dict[str, str]) -> str:
+        timeout = float(values["native_timeout"])
+        if not 0 < timeout < float("inf"):
+            raise ValueError("timeout must be a positive finite number")
+        return str(timeout)
+
+    def _native_known_scan(self, values: dict[str, str]) -> list[str]:
+        return self._run_native_scan(["--timeout", self._native_timeout(values)])
+
+    def _native_discover(self, values: dict[str, str]) -> list[str]:
+        start = int(values["native_start"], 0)
+        end = int(values["native_end"], 0)
+        if not 0x700 <= start <= end <= 0x7F7:
+            raise ValueError("request ID range must stay within 0x700..0x7F7")
+        reports = Path(__file__).resolve().parents[1] / "reports"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        profile = reports / f"dice-profile-{stamp}.json"
+        return self._run_native_scan(
+            ["--discover", "--start", hex(start), "--end", hex(end), "--timeout", self._native_timeout(values)],
+            profile_path=profile,
+        )
+
+    def _native_profile_scan(self, values: dict[str, str]) -> list[str]:
+        profile = values["native_profile"].strip()
+        if not profile:
+            raise ValueError("enter a saved profile JSON path")
+        return self._run_native_scan(["--profile", profile, "--timeout", self._native_timeout(values)])
 
     def _probe_dice_system(self, _values: dict[str, str]) -> list[str]:
         devices = find_dice_system_profiler()
@@ -539,22 +664,31 @@ class VolvoTuiApp:
             status_line += f" | VIN {vehicle.vin}"
         stdscr.addnstr(0, content_x + 1, status_line, max(0, width - content_x - 2), curses.A_BOLD)
 
-        row = 2
+        menu_rows: list[tuple[str, int, int, bool]] = []
         for sidx, section in enumerate(self.sections):
-            if row >= height - 5:
-                break
-            stdscr.addnstr(row, 1, section.title, max(0, left_width - 2), curses.A_UNDERLINE)
-            row += 1
+            menu_rows.append((section.title, sidx, -1, True))
             for aidx, action in enumerate(section.actions):
-                if row >= height - 5:
-                    break
+                menu_rows.append((action.name, sidx, aidx, False))
+            menu_rows.append(("", sidx, -1, False))
+        selected_row = next(
+            index for index, (_, sidx, aidx, _) in enumerate(menu_rows)
+            if sidx == self.section_index and aidx == self.action_index
+        )
+        menu_height = max(1, height - 7)
+        if selected_row < self._menu_scroll:
+            self._menu_scroll = selected_row
+        elif selected_row >= self._menu_scroll + menu_height:
+            self._menu_scroll = selected_row - menu_height + 1
+        for row, (label, sidx, aidx, is_heading) in enumerate(
+            menu_rows[self._menu_scroll : self._menu_scroll + menu_height], start=2
+        ):
+            if is_heading:
+                stdscr.addnstr(row, 1, label, max(0, left_width - 2), curses.A_UNDERLINE)
+            elif label:
                 active = sidx == self.section_index and aidx == self.action_index
                 marker = ">" if active else " "
-                label = f"{marker} {action.name}"
                 attr = curses.A_REVERSE if active else curses.A_NORMAL
-                stdscr.addnstr(row, 1, label, max(0, left_width - 2), attr)
-                row += 1
-            row += 1
+                stdscr.addnstr(row, 1, f"{marker} {label}", max(0, left_width - 2), attr)
 
         selected = self.current_action
         detail_lines = [

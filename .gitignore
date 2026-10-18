@@ -2,3 +2,8 @@
 build/*
 dist/*
 __pycache__
+
+# Local vehicle reports and diagnostic captures
+reports/
+docs/evidence/
+docs/*-volvo-hybrid-diagnosztika.md
