@@ -1,22 +1,11 @@
-"""Recovered DiCE wire-format helpers.
-
-The reverse-engineered Windows DLL shows one concrete framing detail and one
-concrete reply decoder:
-
-* outbound command frames begin with ``0x1D``
-* the second byte is the command ID
-* reply status is a single byte decoded through the RFC status table
-
-The payload layout after the prefix is still under investigation, so this
-module stays intentionally narrow.
-"""
+"""DiCE wire helpers. The outer RPC marker is B5, not the old 1D guess."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 
-DICE_COMMAND_PREFIX = 0x1D
+DICE_COMMAND_PREFIX = 0xB5
 
 DICE_REPLY_STATUS_MESSAGES: dict[int, str] = {
     0x00: "successfull.",
@@ -53,7 +42,10 @@ class DiceWireFrame:
     payload: bytes = b""
 
     def encode(self) -> bytes:
-        return bytes([DICE_COMMAND_PREFIX, self.command_id & 0xFF]) + self.payload
+        from .dice_rpc import encode_packet
+        if not 0 <= self.command_id <= 255:
+            raise ValueError("command ID must fit one byte")
+        return encode_packet(bytes([self.command_id]) + self.payload)
 
 
 def decode_reply_status(status: int) -> str:

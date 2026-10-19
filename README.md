@@ -4,25 +4,54 @@ PYOBD started as a generic OBD2 tool. The current work has shifted to Volvo
 P3 diagnostics with a DiCE adapter and Python, without VIDA or Windows
 dependencies.
 
-The near-term target is a practical Volvo service tool for a 2013 XC60:
-connect, read fault codes, clear fault codes, and eventually speak the DiCE
-native USB protocol directly from Python.
+The native DiCE readout work is being exercised on a 2014 Volvo V60 D6 plug-in
+hybrid. The repository also retains generic OBD and legacy Volvo P3 workflows.
 
-## Current Context
+## Native DiCE on Linux
 
-The reverse-engineering work has established a few facts about the DiCE stack:
+The native path uses direct USB RPC framing, firmware and supply-voltage
+queries, and a 500 kbit/s standard-ID CAN channel. Live reads verified the
+DiCE `0x80` RawCAN transmit and `0x81` event receive path, generic OBD DTC
+services, and ten candidate hybrid module addresses over default-session UDS.
 
-* The adapter is `VID_17AA / PID_D1CE`.
-* Windows DiCE software uses a custom USB driver and a J2534 DLL.
-* We can identify the DiCE device on macOS, but the native DiCE transport is
-  still under implementation.
-* The command protocol has been partially recovered:
-  * outbound frames begin with `0x1D`
-  * the second byte is the DiCE command ID
-  * reply status bytes map to RFC-style error messages
+```sh
+python3 -m volvo_p3.cli dice-info
+python3 -m volvo_p3.cli dice-read-dtc --timeout 1.5
+python3 -m volvo_p3.cli dice-hybrid-dtc --timeout 1.5
+python3 -m volvo_p3.cli dice-hybrid-dtc --module BECM --timeout 1.5
+```
 
-The reverse-engineering notes live in
-[docs/dice-reversing.md](docs/dice-reversing.md).
+The USB device needs read/write access. On a Linux host where only root has
+access, run these commands with `sudo`. PyUSB and libusb are required.
+
+`dice-read-dtc` reads generic OBD modes 03, 07, and 0A. `dice-hybrid-dtc` reads
+candidate P3 D6 modules with UDS `19 02 FF`. Both produce JSON with raw
+USB/CAN evidence. These are read-only commands; neither clears codes or
+changes diagnostic sessions. The successful captures and status interpretation
+are documented in [native-dice.md](docs/native-dice.md).
+
+### Scan all responding UDS addresses
+
+```sh
+# Scan the diagnostic address range and save responders for later reads.
+sudo python3 -m volvo_p3.cli dice-scan --discover --timeout 0.5 --save-profile reports/my-car.json
+# Read the discovered modules again, including their full DTC status records.
+sudo python3 -m volvo_p3.cli dice-scan --profile reports/my-car.json --all-records
+# Interactive menu: choose Native DiCE.
+sudo python3 -m volvo_p3.cli tui
+```
+
+Every scan saves a timestamped JSON report under `reports/`, including partial
+results on interruption. Normal terminal output shows records with supported
+fault or history flags; `--all-records` also shows uncompleted monitors.
+Custom JSON profiles accept explicit request/response CAN IDs.
+Discovery defaults to `0x700..0x7F7`, skips functional `0x7DF`, and assumes
+response ID = request ID + 8. This covers the current 500 kbit/s, 11-bit
+channel. Other buses, 29-bit addressing, legacy D2, and modules requiring
+other diagnostic sessions are not automatically scanned. A timeout is not
+proof that a module is absent or fault-free.
+
+The earlier reverse-engineering notes below are historical.
 
 ## Scope From VIDA Help
 
@@ -53,8 +82,9 @@ The repository already includes these pieces:
 * `python-can` transport wrapper for supported CAN backends
 * DiCE USB detection on macOS through `system_profiler`
 * DiCE USB probing through PyUSB
-* A recovered DiCE command table for `RawCan*`, `Iso15765*`, and system
-  commands
+* A verified native DiCE CAN read path using RawCAN commands `0x80` and `0x81`
+* Generic OBD and default-session UDS DTC readers with raw evidence output
+* A recovered DiCE command table for `RawCan*`, `Iso15765*`, and system commands
 * DiCE installer extraction helpers for `SetupDiCE.exe`
 * A basic curses TUI for connection setup, vehicle profile, diagnostics, fault
   trace, and DTC operations
@@ -126,8 +156,9 @@ Implemented Volvo services:
 
 Requests use extended CAN ID `0x000FFFFE`.
 
-The DTC payload is currently reported as raw bytes. Code decoding should be
-added only after captures from the target vehicle are validated.
+The legacy `AE` read path still reports raw Volvo DTC payload bytes. Native
+generic OBD and UDS reports decode SAE-style DTC bytes and preserve the raw
+bytes and status flags.
 
 ## DiCE Reverse-Engineering Notes
 
@@ -140,30 +171,9 @@ The current DiCE work has identified:
 * the RFC status decoder
 * the first visible frame layout for DiCE commands
 
-Recovered command IDs currently captured in code include:
-
-* `0`: `RfcVersion`
-* `2`: `SysHardwareVersion`
-* `3`: `SysFirmwareVersion`
-* `10`: `RawCanInit`
-* `12`: `RawCanStart`
-* `13`: `RawCanStop`
-* `14`: `RawCanSet`
-* `15`: `RawCanGet`
-* `18`: `RawCanTxClear`
-* `19`: `RawCanRxClear`
-* `20`: `RawCanAddFilter`
-* `21`: `RawCanRemoveFilter`
-* `40`: `Iso15765Init`
-* `42`: `Iso15765Start`
-* `43`: `Iso15765Stop`
-* `44`: `Iso15765Set`
-* `45`: `Iso15765Get`
-* `50`: `Iso15765AddFilter`
-* `51`: `Iso15765RemoveFilter`
-* `55`: `WarrantyClockGet`
-* `62`: `BitSupplyVoltage`
-* `68`: `BitLed`
+Use `python3 -m volvo_p3.cli list-dice-commands` for the corrected command IDs.
+The old decimal rendering of MSVC hexadecimal arguments and the presumed 1D
+wire prefix were incorrect. The native outer framing uses B5.
 
 ## To-Dos
 
@@ -171,16 +181,8 @@ Recovered command IDs currently captured in code include:
   are closer to VIDA's presentation.
 * Add clearer vehicle identification and module mapping in the TUI once real
   captures from the XC60 are available.
-* Recover the payload layout for `RawCanInit`, `RawCanStart`, `RawCanSet`,
-  and the corresponding ISO-TP commands.
-* Implement a native Python DiCE transport that can open the adapter directly
-  on macOS.
-* Add a small DiCE smoke test that opens the device and round-trips one known
-  command.
-* Add a TUI lane for DiCE-native transport once the command payloads are
-  recovered.
 * Map real Volvo response frames to human-readable DTC and module labels.
-* Add safer discovery logic for the 2013 XC60 module set.
+* Verify candidate module identities against vehicle-specific diagnostic data.
 * Expand the TUI into a lightweight command runner for cataloging and clearing
   fault codes.
 
