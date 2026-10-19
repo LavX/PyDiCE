@@ -193,6 +193,7 @@ def _result_base(request_id: int, response_id: int, evidence: List[Dict[str, Any
         "request_status_mask": DTC_STATUS_MASK,
         "request_status_mask_hex": "0xFF",
         "dtcs": None,
+        "request_response_received": False,
         "evidence": evidence,
     }
 
@@ -205,7 +206,7 @@ def _extract_payload(
     start_time: float,
     timeout: float,
     evidence: List[Dict[str, Any]],
-) -> Tuple[Optional[bytes], Optional[Dict[str, Any]], Optional[str], int]:
+) -> Tuple[Optional[bytes], Optional[Dict[str, Any]], Optional[str], int, bool]:
     """Collect one ISO-TP response, sending flow control for a first frame."""
     initial_deadline = start_time + timeout
     response_pending_deadline = start_time + MAX_RESPONSE_PENDING_WAIT
@@ -216,21 +217,28 @@ def _extract_payload(
     assembled = bytearray()
     response_pending_count = 0
     evidence_omitted = 0
+    request_response_received = False
 
-    def record(frame: VolvoFrame, direction: str, kind: str, **extra: Any) -> None:
+    def record(
+        frame: VolvoFrame, direction: str, kind: str, **extra: Any
+    ) -> Optional[Dict[str, Any]]:
         nonlocal evidence_omitted
         if len(evidence) < MAX_EVIDENCE_FRAMES:
             item = _frame_record(direction, kind, frame)
             item.update(extra)
             evidence.append(item)
+            return item
         else:
             evidence_omitted += 1
+            return None
 
-    def issue(status: str, reason: str) -> Tuple[None, Dict[str, Any], None, int]:
+    def issue(
+        status: str, reason: str
+    ) -> Tuple[None, Dict[str, Any], None, int, bool]:
         detail: Dict[str, Any] = {"status": status, "reason": reason}
         if response_pending_count:
             detail["response_pending_count"] = response_pending_count
-        return None, detail, None, evidence_omitted
+        return None, detail, None, evidence_omitted, request_response_received
 
     while True:
         remaining = deadline - time.monotonic()
@@ -239,16 +247,16 @@ def _extract_payload(
                 return issue("incomplete", "timeout_waiting_for_consecutive_frame")
             if response_pending_count:
                 return issue("response_pending_timeout", "response_pending_deadline_exceeded")
-            return None, None, "no_response", evidence_omitted
+            return None, None, "no_response", evidence_omitted, request_response_received
 
         frame = bus.recv(timeout=remaining)
         if frame is None:
             continue
         matches = not frame.is_extended_id and frame.arbitration_id == response_id
         if not matches:
-            evidence_omitted += 1
+            record(frame, "rx", "response", matched=False)
             continue
-        record(frame, "rx", "response", matched=True)
+        evidence_frame = record(frame, "rx", "response", matched=True)
         data = bytes(frame.data)
         if not data:
             return issue("malformed", "empty_can_frame")
@@ -262,14 +270,20 @@ def _extract_payload(
             if payload[:1] == b"\x59" and len(payload) < 2:
                 return issue("malformed", "truncated_positive_response_header")
             if payload[:2] == bytes((0x59, SUBFUNCTION_REPORT_DTC_BY_STATUS_MASK)):
-                return payload, None, None, evidence_omitted
+                request_response_received = True
+                if evidence_frame is not None:
+                    evidence_frame["uds_request_match"] = True
+                return payload, None, None, evidence_omitted, request_response_received
             negative = _negative_response(payload)
             if negative is not None:
+                request_response_received = True
+                if evidence_frame is not None:
+                    evidence_frame["uds_request_match"] = True
                 if negative["status"] == "response_pending":
                     response_pending_count += 1
                     deadline = response_pending_deadline
                     continue
-                return None, negative, None, evidence_omitted
+                return None, negative, None, evidence_omitted, request_response_received
             if payload[:1] == b"\x7F" and len(payload) < 2:
                 return issue("malformed", "truncated_negative_response_header")
             continue
@@ -277,6 +291,8 @@ def _extract_payload(
         if pci_type == 1:
             if len(data) < 2:
                 return issue("malformed", "short_first_frame")
+            if len(data) != 8:
+                return issue("malformed", "truncated_first_frame")
             frame_length = ((data[0] & 0x0F) << 8) | data[1]
             header_length = 2
             if frame_length == 0:
@@ -297,6 +313,10 @@ def _extract_payload(
                 return issue("malformed", "truncated_negative_response_header")
             if _response_prefix_matches(initial) is False:
                 continue
+            if _response_prefix_matches(initial) is True:
+                request_response_received = True
+                if evidence_frame is not None:
+                    evidence_frame["uds_request_match"] = True
             if transfer_deadline is None:
                 transfer_deadline = time.monotonic() + MAX_TRANSFER_WAIT
             deadline = min(transfer_deadline, time.monotonic() + CONSECUTIVE_FRAME_TIMEOUT)
@@ -332,16 +352,22 @@ def _extract_payload(
                 if payload[:1] == b"\x7F" and len(payload) < 2:
                     return issue("malformed", "truncated_negative_response_header")
                 if payload[:2] == bytes((0x59, SUBFUNCTION_REPORT_DTC_BY_STATUS_MASK)):
-                    return payload, None, None, evidence_omitted
+                    request_response_received = True
+                    if evidence_frame is not None:
+                        evidence_frame["uds_request_match"] = True
+                    return payload, None, None, evidence_omitted, request_response_received
                 negative = _negative_response(payload)
                 if negative is not None:
+                    request_response_received = True
+                    if evidence_frame is not None:
+                        evidence_frame["uds_request_match"] = True
                     if negative["status"] == "response_pending":
                         response_pending_count += 1
                         total_length = None
                         assembled.clear()
                         deadline = response_pending_deadline
                         continue
-                    return None, negative, None, evidence_omitted
+                    return None, negative, None, evidence_omitted, request_response_received
                 continue
             continue
 
@@ -380,7 +406,7 @@ def read_uds_dtcs(
     bus.send(request)
     start_time = time.monotonic()
 
-    payload, issue, terminal_status, evidence_omitted = _extract_payload(
+    payload, issue, terminal_status, evidence_omitted, request_response_received = _extract_payload(
         bus,
         request_id=request_id,
         response_id=response_id,
@@ -390,6 +416,7 @@ def read_uds_dtcs(
     )
     if evidence_omitted:
         result["evidence_omitted"] = evidence_omitted
+    result["request_response_received"] = request_response_received
     if terminal_status is not None:
         result["status"] = terminal_status
         result["response_pending_count"] = 0
@@ -408,4 +435,5 @@ def read_uds_dtcs(
         return result
     assert positive is not None
     result.update(positive)
+    result["request_response_received"] = True
     return result

@@ -2,6 +2,7 @@ import json
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from volvo_p3.obd_read import scan_obd
 from volvo_p3.protocol import VolvoFrame
@@ -129,6 +130,77 @@ class ObdReadTests(unittest.TestCase):
         self.assertEqual(mode["status"], "incomplete")
         self.assertEqual(mode["reason"], "consecutive_frame_sequence_mismatch")
         self.assertIsNone(mode["dtcs"])
+
+    def test_truncated_consecutive_frame_is_malformed(self):
+        bus = FakeBus(
+            {
+                (0x01, 0x00): [can_frame(0x7E8, "06 41 00 80 00 00 00")],
+                (0x03, None): [
+                    can_frame(0x7E8, "10 0C 43 05 01 06 01 33"),
+                    can_frame(0x7E8, "21 01 23"),
+                    can_frame(0x7E8, "22 01 24 01 25 00 00 00"),
+                ],
+            }
+        )
+
+        result = self.scan(bus)
+        mode = result["ecus"][0]["modes"]["03"]
+
+        self.assertEqual(mode["status"], "malformed")
+        self.assertEqual(mode["reason"], "truncated_consecutive_frame")
+        self.assertIsNone(mode["dtcs"])
+
+    def test_multiframe_transfer_can_finish_after_initial_response_timeout(self):
+        clock = [0.0]
+
+        class DelayedBus:
+            def __init__(self):
+                self.events = []
+
+            def send(self, frame):
+                if frame.arbitration_id != 0x7DF:
+                    return
+                service = frame.data[1]
+                if service == 0x01:
+                    self.events.append(
+                        (clock[0], can_frame(0x7E8, "06 41 00 80 00 00 00"))
+                    )
+                elif service == 0x03:
+                    self.events.extend(
+                        [
+                            (clock[0], can_frame(0x7E8, "10 08 43 03 01 33 01 23")),
+                            (clock[0] + 0.1, can_frame(0x7E8, "21 01 24 00 00 00 00 00")),
+                        ]
+                    )
+
+            def recv(self, timeout=0.1):
+                if self.events and self.events[0][0] <= clock[0] + timeout:
+                    event_time, frame = self.events.pop(0)
+                    clock[0] = max(clock[0], event_time)
+                    return frame
+                clock[0] += timeout
+                return None
+
+        bus = DelayedBus()
+        with patch("volvo_p3.obd_read.time.monotonic", side_effect=lambda: clock[0]):
+            result = scan_obd(
+                bus,
+                discovery_timeout=0.01,
+                response_timeout=0.01,
+                recv_timeout=0.005,
+            )
+
+        stored = result["ecus"][0]["modes"]["03"]
+        self.assertEqual(stored["status"], "ok")
+        self.assertEqual(stored["dtcs"], ["P0133", "P0123", "P0124"])
+        self.assertGreaterEqual(clock[0], 0.1)
+
+    def test_receive_timeouts_must_be_finite(self):
+        for field in ("discovery_timeout", "response_timeout", "recv_timeout"):
+            for value in (float("nan"), float("inf")):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(ValueError, "positive and finite"):
+                        scan_obd(FakeBus({}), **{field: value})
 
     def test_odd_dtc_payload_is_malformed_and_no_response_stays_distinct(self):
         bus = FakeBus(

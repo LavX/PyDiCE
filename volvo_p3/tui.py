@@ -320,7 +320,7 @@ class VolvoTuiApp:
         else:
             from .cli import main as cli_main
 
-        reports = Path(__file__).resolve().parents[1] / "reports"
+        reports = Path.cwd() / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         output = reports / f"dice-scan-{stamp}.json"
@@ -388,7 +388,7 @@ class VolvoTuiApp:
         end = int(values["native_end"], 0)
         if not 0x700 <= start <= end <= 0x7F7:
             raise ValueError("request ID range must stay within 0x700..0x7F7")
-        reports = Path(__file__).resolve().parents[1] / "reports"
+        reports = Path.cwd() / "reports"
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         profile = reports / f"dice-profile-{stamp}.json"
         return self._run_native_scan(

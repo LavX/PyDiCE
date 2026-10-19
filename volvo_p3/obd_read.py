@@ -6,6 +6,7 @@ and DTC services 03, 07, and 0A. It never sends a clear or reset request.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,12 +39,16 @@ _NRC_NAMES = {
     0x31: "request_out_of_range",
     0x7F: "service_not_supported_in_active_session",
 }
+CONSECUTIVE_FRAME_TIMEOUT = 1.0
+MAX_TRANSFER_WAIT = 10.0
 
 
 @dataclass
 class _Assembly:
     total_length: int
     buffer: bytearray
+    deadline: float
+    transfer_deadline: float
     next_sequence: int = 1
 
 
@@ -190,14 +195,22 @@ def _collect(
     evidence.append(_frame_record(phase, "tx", "request", request))
 
     active: Dict[int, _Assembly] = {}
-    deadline = time.monotonic() + timeout
+    response_deadline = time.monotonic() + timeout
 
     def record_issue(response_id: int, reason: str, status: str = "incomplete") -> None:
         if response_id not in result.payloads:
             result.issues[response_id] = {"status": status, "reason": reason}
 
     while True:
-        remaining = deadline - time.monotonic()
+        now = time.monotonic()
+        for response_id, assembly in list(active.items()):
+            if now >= assembly.deadline:
+                active.pop(response_id, None)
+                record_issue(response_id, "timeout_waiting_for_consecutive_frame")
+        deadline = max(
+            [response_deadline, *(assembly.deadline for assembly in active.values())]
+        )
+        remaining = deadline - now
         if remaining <= 0:
             break
         frame = bus.recv(timeout=min(recv_timeout, remaining))
@@ -230,6 +243,9 @@ def _collect(
             if len(data) < 2:
                 record_issue(response_id, "short_first_frame", "malformed")
                 continue
+            if len(data) != 8:
+                record_issue(response_id, "truncated_first_frame", "malformed")
+                continue
             total_length = ((data[0] & 0x0F) << 8) | data[1]
             initial_payload = data[2:]
             if total_length <= len(initial_payload):
@@ -240,7 +256,16 @@ def _collect(
                 continue
             if _payload_matches_request_prefix(initial_payload, request_service, request_pid) is False:
                 continue
-            active[response_id] = _Assembly(total_length, bytearray(initial_payload))
+            transfer_start = time.monotonic()
+            active[response_id] = _Assembly(
+                total_length,
+                bytearray(initial_payload),
+                min(
+                    transfer_start + CONSECUTIVE_FRAME_TIMEOUT,
+                    transfer_start + MAX_TRANSFER_WAIT,
+                ),
+                transfer_start + MAX_TRANSFER_WAIT,
+            )
             flow_control = _flow_control_frame(response_id)
             bus.send(flow_control)
             evidence.append(_frame_record(phase, "tx", "flow_control", flow_control))
@@ -256,7 +281,17 @@ def _collect(
                 active.pop(response_id, None)
                 record_issue(response_id, "consecutive_frame_sequence_mismatch")
                 continue
-            assembly.buffer.extend(data[1 : 1 + assembly.total_length - len(assembly.buffer)])
+            remaining_payload = assembly.total_length - len(assembly.buffer)
+            required_bytes = min(7, remaining_payload)
+            if len(data) - 1 < required_bytes:
+                active.pop(response_id, None)
+                record_issue(response_id, "truncated_consecutive_frame", "malformed")
+                continue
+            assembly.buffer.extend(data[1 : 1 + remaining_payload])
+            assembly.deadline = min(
+                time.monotonic() + CONSECUTIVE_FRAME_TIMEOUT,
+                assembly.transfer_deadline,
+            )
             assembly.next_sequence = (assembly.next_sequence + 1) & 0x0F
             if len(assembly.buffer) >= assembly.total_length:
                 payload = bytes(assembly.buffer[: assembly.total_length])
@@ -333,11 +368,15 @@ def scan_obd(
     """Discover OBD responders, then read stored, pending, and permanent DTCs.
 
     ``bus`` must provide ``send(VolvoFrame)`` and ``recv(timeout)`` methods.
-    Receive windows are bounded by the supplied timeouts. All returned values,
-    including the raw evidence records, are JSON serializable.
+    Initial response windows use the supplied timeouts. A multi-frame response
+    gets a separate per-frame timeout and a bounded total transfer window. All
+    returned values, including raw evidence records, are JSON serializable.
     """
-    if discovery_timeout <= 0 or response_timeout <= 0 or recv_timeout <= 0:
-        raise ValueError("timeouts must be positive")
+    if not all(
+        math.isfinite(value) and value > 0
+        for value in (discovery_timeout, response_timeout, recv_timeout)
+    ):
+        raise ValueError("timeouts must be positive and finite")
     if max_payload < 1 or max_payload > 4095:
         raise ValueError("max_payload must be between 1 and 4095 bytes")
 

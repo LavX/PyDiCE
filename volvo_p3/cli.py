@@ -250,12 +250,14 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
                 print(f"  {dtc['code']}-{dtc['failure_type_byte']:02X} raw={dtc['status_hex']} effective=0x{effective:02X} {', '.join(bits)}", flush=True)
 
     save()
+    scan_completed = False
     try:
         with DiceRpc() as rpc:
             report["adapter"] = rpc.system_info()
             with DiceCanTransport(rpc, uds_requests=[t.request_id for t in targets]) as bus:
                 result = scan_modules(bus, targets, timeout=args.timeout, progress=progress)
                 report.update(result)
+                scan_completed = True
             report["adapter_after"] = rpc.system_info()
     except KeyboardInterrupt:
         report["status"] = "interrupted"
@@ -265,10 +267,9 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
     finally:
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
         save()
-    if args.save_profile:
+    if args.save_profile and scan_completed and report["status"] not in ("error", "interrupted"):
         responded = {m["request_id"] for m in report["modules"]
-                     if m.get("raw_payload_hex") or m.get("status") in ("ok", "negative_response", "response_pending_timeout")
-                     or any(e.get("direction") == "rx" and e.get("matched") for e in m.get("evidence", []))}
+                     if m.get("request_response_received") is True}
         profile = {"name": "Discovered UDS modules", "modules": [
             {"name": t.name, "request_id": f"0x{t.request_id:03X}", "response_id": f"0x{t.response_id:03X}"}
             for t in targets if t.request_id in responded]}
@@ -279,7 +280,9 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
             temporary_profile.replace(args.save_profile)
             print(f"Profile: {args.save_profile} ({len(profile['modules'])} responding targets)")
         else:
-            print("No responding targets; no reusable profile written.")
+            print("No matching diagnostic responses; no reusable profile written.")
+    elif args.save_profile:
+        print("Discovery was incomplete; the existing profile was left unchanged.")
     print(f"Report: {output}")
     print(f"Status: {report['status']}; summary: {report.get('summary', {})}")
     if report["status"] == "interrupted":

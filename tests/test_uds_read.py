@@ -40,6 +40,7 @@ class UdsReadTests(unittest.TestCase):
         )
         self.assertEqual(len(bus.sent), 1)
         self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["request_response_received"])
         self.assertEqual(result["status_availability_mask"], 0xFF)
         self.assertEqual(result["dtc_count"], 1)
         dtc = result["dtcs"][0]
@@ -140,6 +141,23 @@ class UdsReadTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["dtcs"], [])
+        self.assertEqual(len(bus.sent), 1)
+
+    def test_unrelated_response_does_not_qualify_discovered_target(self):
+        bus = FakeBus([can_frame(0x7E8, "03 58 02 7F")])
+
+        result = read_uds_dtcs(bus, 0x7E0, 0x7E8, timeout=0.003)
+
+        self.assertEqual(result["status"], "no_response")
+        self.assertFalse(result["request_response_received"])
+
+    def test_truncated_first_frame_is_rejected(self):
+        bus = FakeBus([can_frame(0x7E8, "10 0B 59 02 FF 01 33")])
+
+        result = read_uds_dtcs(bus, 0x7E0, 0x7E8, timeout=0.01)
+
+        self.assertEqual(result["status"], "malformed")
+        self.assertEqual(result["reason"], "truncated_first_frame")
         self.assertEqual(len(bus.sent), 1)
 
     def test_short_consecutive_frame_is_rejected(self):
