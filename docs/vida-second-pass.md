@@ -71,12 +71,13 @@ script for X40 MY1999-2000 Diesel, carries `EcuType=381101` and service IDs 13,
 VCC-241986 passed its CRC; VCC-242880's body failed, so its node values come
 from the recovered fragment.
 
-A full carve found 89,229 PKZIP headers. Of those, 44,983 parse as XML script
-bodies, 2,047 are complete with a verified CRC, and 42,936 are truncated by
-non-contiguous LOB pages. The complete set covers 1,472 distinct docnos in 18
-languages. Type 10 read script `VCC-227144`, "Read DTCs", en-US, recovered from
-offset `1985634414`, has 38 profile IDs, `EcuType=831701`,
-`ServiceId=5`, and a `DtcList` iterator binding `Dtc.value` and `Dtc.text`.
+A carve found tens of thousands of PKZIP headers. Counts differ between passes:
+only about 2,000 bodies are CRC-clean, several thousand parse as XML, and tens
+of thousands are truncated by non-contiguous LOB pages or character-damaged in
+the MDF. The clean set spans many docnos and 18 languages. Type 10 read script
+`VCC-227144`, "Read DTCs", en-US, recovered from offset `1985634414`, has 38
+profile IDs, `EcuType=831701`, `ServiceId=5`, and a `DtcList` iterator binding
+`Dtc.value` and `Dtc.text`.
 `VCC-234665` is a richer sibling using `EcuType=284101`, `ServiceId=5` for the
 list and `ServiceId=19` per code.
 
@@ -424,10 +425,10 @@ can be resolved from this image.
 
 ## 7. Remaining open questions
 
-1. **How much script coverage is there?** 44,983 bodies parse as XML, 2,047 are
-   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
-   pages. The complete set covers 1,472 docnos in 18 languages; a type 10 read
-   script (`VCC-227144`) is decoded, but the truncated bodies remain unread.
+1. **How much script coverage is there?** Only about 2,000 bodies are CRC-clean;
+   several thousand parse as XML, and tens of thousands are truncated or
+   character-damaged. A type 10 read script (`VCC-227144`) is decoded, but the
+   damaged bodies remain unread.
 2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
    the schema, and the proc/managed chain puts `EcuAddress` on the
    `commAddress` side. The table appears empty in this snapshot, so no CAN ID

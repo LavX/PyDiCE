@@ -249,10 +249,10 @@ means the available evidence goes against the earlier wording.
 
 ## Open questions
 
-1. **How complete is the script coverage?** 44,983 bodies parse as XML, 2,047 are
-   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
-   pages. A type 10 read script (`VCC-227144`) is decoded; the truncated bodies
-   remain unread.
+1. **How complete is the script coverage?** Only about 2,000 bodies are
+   CRC-clean; several thousand parse as XML, and tens of thousands are truncated
+   or character-damaged. A type 10 read script (`VCC-227144`) is decoded; the
+   damaged bodies remain unread.
 2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
    the schema, and the proc/managed chain puts `EcuAddress` on the `commAddress`
    side. The table appears empty in this snapshot, so no CAN ID can be resolved

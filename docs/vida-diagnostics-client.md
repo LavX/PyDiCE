@@ -222,11 +222,12 @@ recovered fragment. VCC-241986, a ClearDtc script, carries `EcuType=381101` and
 service IDs 13, 41, 5, 6, 14, 63 and 66. `script/@VariantId` is a script id,
 not an ECU variant.
 
-A carve found 89,229 PKZIP headers: 44,983 parse as XML bodies, 2,047 are
-complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
-pages. The complete set covers 1,472 docnos in 18 languages. Type 10 read
-script `VCC-227144` ("Read DTCs", en-US), recovered from offset `1985634414`,
-has 38 profile IDs, `EcuType=831701`, `ServiceId=5`, and a
+A carve found tens of thousands of PKZIP headers. Counts differ between passes:
+only about 2,000 bodies are CRC-clean, several thousand parse as XML, and tens
+of thousands are truncated by non-contiguous LOB pages or character-damaged in
+the MDF. The clean set spans many docnos and 18 languages. Type 10 read script
+`VCC-227144` ("Read DTCs", en-US), recovered from offset `1985634414`, has 38
+profile IDs, `EcuType=831701`, `ServiceId=5`, and a
 `DtcList` iterator binding `Dtc.value` and `Dtc.text`.
 
 `EcuAddress` is a one-byte CarCom node address, not a CAN request ID. It is the
@@ -308,12 +309,12 @@ remaining work is coverage, not format.
 
 ## Open questions
 
-1. **What values do scripts carry?** 44,983 bodies parse as XML, 2,047 are
-   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
-   pages. The complete set covers 1,472 docnos in 18 languages. VCC-242880
-   carries `EcuAddress=17` and `ServiceId=71`; VCC-241986 carries
-   `EcuType=381101` and service IDs 13, 41, 5, 6, 14, 63 and 66; VCC-227144 is
-   a type 10 read script. The truncated bodies remain unread.
+1. **What values do scripts carry?** Only about 2,000 bodies are CRC-clean;
+   several thousand parse as XML, and tens of thousands are truncated or
+   character-damaged. VCC-242880 carries `EcuAddress=17` and `ServiceId=71`;
+   VCC-241986 carries `EcuType=381101` and service IDs 13, 41, 5, 6, 14, 63
+   and 66; VCC-227144 is a type 10 read script. The damaged bodies remain
+   unread.
 2. **What does `EcuAddress` mean on the wire?** It is the CarCom `commAddress`
    side, not a CAN ID. `T121_Config` has `CanIdRX`/`CanIdTX`/`CanIdFunc`, but the
    table appears empty in this snapshot, so the physical mapping is not available
