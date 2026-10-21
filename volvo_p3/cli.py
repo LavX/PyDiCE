@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from .can_transport import CanBusConfig, PythonCanTransport
-from .dice_commands import iter_commands
+from .dice_commands import CATEGORIES, iter_commands
 from .dice_installer import extract_setup_dice
 from .dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
 from .modules import KNOWN_MODULES, parse_ecu
@@ -72,7 +72,15 @@ def cmd_list_modules(args: argparse.Namespace) -> int:
 
 def cmd_list_dice_commands(args: argparse.Namespace) -> int:
     for command in iter_commands(args.category):
-        print(f"{command.command_id:3d}  {command.category:9s}  {command.direction:16s}  {command.name}")
+        line = (
+            f"0x{command.command_id:02X}  {command.category:9s}  {command.direction:16s}  "
+            f"{command.source:10s}  {command.name}"
+        )
+        if args.types:
+            request = command.request_type or "-"
+            reply = command.reply_type or "-"
+            line += f"  {request} -> {reply}"
+        print(line)
     return 0
 
 
@@ -408,7 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_modules.set_defaults(func=cmd_list_modules)
 
     list_dice_commands = subparsers.add_parser("list-dice-commands", help="show recovered DiCE command IDs")
-    list_dice_commands.add_argument("--category", choices=("system", "raw_can", "iso15765"), default=None)
+    list_dice_commands.add_argument("--category", choices=CATEGORIES, default=None)
+    list_dice_commands.add_argument(
+        "--types", action="store_true", help="also show the request/reply payload struct names"
+    )
     list_dice_commands.set_defaults(func=cmd_list_dice_commands)
 
     probe_can = subparsers.add_parser("probe-can", help="show python-can backends and optional detected configs")

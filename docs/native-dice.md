@@ -39,6 +39,8 @@ Request IDs must be within `0x700..0x7F7`; response IDs can use the full 11-bit 
 
 The native USB framing and command layouts were recovered from `artifacts/setupdice_extracted/Dice_x64_cab/DiCE32_x64.dll`. The older `docs/dice-reversing.md` contains incorrect framing and command-number assumptions; its 1D prefix is not the outer marker. The live raw CAN path uses commands `0x80` and `0x81` as described above.
 
+The full recovered command surface is in `docs/dice-compatibility.md`, and `python3 -m volvo_p3.cli list-dice-commands` prints it from `volvo_p3/dice_commands.py`. Each row records whether its ID was named from RTTI, from strings, from a `movb` store site, or verified live, so the evidence for any command can be checked without reopening the binary.
+
 ## Discovery and repeated reads
 
 `dice-scan --discover --timeout 0.5 --save-profile reports/my-car.json` saves all responding targets, including incomplete responses. Read that profile with `dice-scan --profile reports/my-car.json --timeout 1.5`. Omit `--all-records` for a concise fault/history list. To deliberately refresh an existing profile, add `--replace-profile` to the discovery command.
