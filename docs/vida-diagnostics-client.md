@@ -10,6 +10,8 @@ actually changes a read. Paths are relative to the tree root.
 
 Nothing here was executed. The assemblies were read statically: PE/CLI metadata,
 member signatures, user strings, and the SQL in `DiagSwdlRepository_Data.MDF`.
+A second pass decoded script bodies and corrected the `VehType` and addressing
+findings; see `docs/vida-second-pass.md`.
 
 ## Where it lives
 
@@ -45,11 +47,14 @@ CommToolBatteryLimit     11
 LogLevel                 Trace
 ```
 
-Two things stand out. `VehType` is `p2x`, which is a platform designation sitting
-in the same tree as this repository's `P3_D6_MODULES`, so the client is
-parameterised by platform rather than by model. And the shipped configuration is
-`NoCommConnection` with an empty `CommToolName`, which matches
-`docs/dice-compatibility.md`: nothing in the image selects a J2534 device.
+Two things stand out. `VehType` is `p2x`, a three-character platform code
+carried as configuration data. No managed code branches on it: the `_vehType`
+field is read only by its getter, `GetScript` does not take it, and no lowercase
+`p2x` literal exists in the 243 managed PEs. It is not a P2/P3 switch. The
+shipped configuration also sets `DiagnosticConnection` to `NoCommConnection`
+with an empty `CommToolName`, so no device is bound in this snapshot. That is a
+statement about the snapshot, not about what the UI can do; the boundary note
+records the selection path.
 
 `components.config.xml` wires the client through a component factory. The
 `ScriptProvider` component receives both settings:
@@ -116,11 +121,12 @@ EcuDescriptionFromType(...)
 EcuNameFromVariantId(...)
 ```
 
-`EcuNameFromVariantId` is the mapping that the timing table needs: `DiceTiming`
-keys its rows on an integer `ECU_variant`, and this is the function that turns
-such an integer into a name. Only `DIM`, `CEM`, `CCM` and `Unknown` appear as
-inline literals, and `sv-SV` appears as a culture string, so the rest of the
-names come from data or localized resources rather than the assembly.
+`EcuNameFromVariantId` is the display-side mapping for the timing table's
+integer `ECU_variant`. The runtime timing path in `VehCom2` passes the integer
+straight to SQL and does not reference this assembly. Only `DIM`, `CEM`, `CCM`
+and `Unknown` appear as inline literals, and `sv-SV` appears as a culture
+string, so the rest of the names come from data or localized resources rather
+than the assembly.
 
 ## The scripts are the readout
 
@@ -183,16 +189,16 @@ Supporting strings describe the runtime around them: `Alive Ecus:`,
 type`, `Could not build request`, `Car config parameters:`, `Vehicle info
 parameters:`, `Error executing script`, and `Not a valid EcuMode`.
 
-Two consequences. First, an `EcuAddress` field means the script **does** carry
-CAN addressing, so the read plan is per-vehicle data rather than code, and the
-profile-selected script is where a per-module address actually lives. Second,
-`Alive Ecus:` and `Dead Ecus:` plus `Ecus not in car config:` mean the client
-tracks which modules answered and compares against a car configuration before
-deciding what to read.
+Two consequences. First, an `EcuAddress` field means the script carries a
+per-vehicle node address, so the read plan is data rather than code. It is not
+the CAN ID; `T121_Config` maps the node address to `CanIdRX`/`CanIdTX`/
+`CanIdFunc`. Second, `Alive Ecus:` and `Dead Ecus:` plus
+`Ecus not in car config:` mean the client tracks which modules answered and
+compares against a car configuration before deciding what to read.
 
-The element semantics above are read from parser names, not from decompiled
-bodies, so treat the field meanings as inferred even though the names are
-observed.
+The element semantics above are still partly inferred. Decoded bodies confirm
+the ZIP container and the `Components.VehComm` shape, but not every element's
+runtime meaning.
 
 Scripts are fetched from the database already zipped (`GetFromDb`,
 `GetZippedScriptXml`, `GetOneScriptFromDb`) or read from disk through
@@ -200,16 +206,38 @@ Scripts are fetched from the database already zipped (`GetFromDb`,
 No `.xmlds` file exists anywhere in this tree, so every script here comes from
 the database.
 
+### The body is ZIP XML
+
+`ScriptContent.XmlDataCompressed` is a single-entry PKZIP archive with a deflate
+stream. `ScriptProvider.GetZippedScriptXml` calls
+`Vcc.Vida.DiagSwdl.Util.Compression.ZIP.DecompressString`, which uses
+`ICSharpCode.SharpZipLib.Zip.ZipInputStream`. A carved entry at offset
+`2176131182` of `DiagSwdlRepository_Data.MDF` passes `unzip -t`.
+
+Decoded `Components.VehComm` nodes carry either `EcuAddress` or `EcuType`, plus
+`ServiceId`, `Request` and `Response`. VCC-242880 carries `EcuAddress=17` and
+`ServiceId=71`; its body failed its CRC, so those node values come from the
+recovered fragment. VCC-241986, a ClearDtc script, carries `EcuType=381101` and
+service IDs 13, 41, 5, 6, 14, 63 and 66. `script/@VariantId` is a script id,
+not an ECU variant.
+
+`EcuAddress` is a one-byte CarCom node address, not a CAN request ID. It matches
+`T121_Config.commAddress`; the physical IDs are `T121_Config.CanIdRX`,
+`CanIdTX` and `CanIdFunc`, reached through `NodeAddressBuilder`.
+
 What happens after a script returns, including where the sentence beside a code
 comes from and what is attached as context, is in `docs/vida-dtc-readout.md`.
 
 ## How it reaches the bus
 
-`VehCom2.DLL` is the J2534 layer. Its strings show ISO15765 and ISO9141
-handling, five-baud init (`Calling FiveBaudInit on address 0x{0:X}`,
-`fivebaudinit (RS2000)`), J2534-2 detection, message filtering
-(`PassThruStartMsgFilter`, `FilterBuffer() invalid D2 frame`) and both CAN
-high and low speed paths (`J2534 cannot access CAN LS bus`).
+`VehCom2.DLL` is the J2534 layer. `Util.DLL` resolves the `FunctionLibrary`
+value from the PassThru registry key; `VehCom2.J2534ChannelManager` selects by
+`CommToolName` and `J2534Proxy.LoadDll` loads it. Its strings show ISO15765 and
+ISO9141 handling, five-baud init
+(`Calling FiveBaudInit on address 0x{0:X}`, `fivebaudinit (RS2000)`), J2534-2
+detection, message filtering (`PassThruStartMsgFilter`, `FilterBuffer() invalid
+D2 frame`) and both CAN high and low speed paths (`J2534 cannot access CAN LS
+bus`).
 
 The timing database is consumed here, not in the web application:
 
@@ -228,61 +256,64 @@ P2CanServerMax deviation: {0} ms
 P4CanServerMax deviation: {0} ms
 ```
 
-The chain the artifacts describe runs end to end: profile set selects a script,
-the script names ECUs with addresses and services, and the comm layer looks up
-per-ECU-variant timeout and resend from `DiceTiming` and pushes `P2Can`/`P4Can`
-into the J2534 channel. That is how two vehicle types could produce different
-traffic. What is still missing is a script body: the schema says addresses and
-services are there, but no value from one was read.
+The chain the artifacts describe runs end to end: the profile set selects a
+script, the script names ECUs with `EcuAddress`/`EcuType` and `ServiceId`,
+CarCom `T121_Config` maps the node address to `CanIdRX`/`CanIdTX`/`CanIdFunc`,
+and the comm layer looks up per-ECU-variant timeout and resend from
+`DiceTiming` and pushes `P2Can`/`P4Can` into the J2534 channel. That is how two
+vehicle types can produce different traffic. Concrete script values are now
+read; what remains is coverage, not format.
 
 ## Timing
 
 `db/DiceTiming_Data.MDF` supplies `P1max`, `P3min`, `P4min`, `Timeout` and
 `Resend` keyed by `ECU_variant` plus request bytes `B1`, `B2`, `B3`. That is
-covered in `docs/vida-vehicle-profile.md`; it is a separate axis from the script,
-and `EcuNameFromVariantId` is what would let a caller join the two.
+covered in `docs/vida-vehicle-profile.md`; it is a separate axis from the script.
+`EcuNameFromVariantId` is a display-side helper, not part of the runtime timing
+path.
 
 ## What this means for PyDiCE
 
 The mechanism is now clear enough to stop guessing about it:
 
-* VIDA does not ship a separate vehicle-to-ECU-address table. The addresses and
-  service IDs live **inside scripts keyed by profile**, and the timing comes from
+* VIDA does not ship a separate vehicle-to-ECU-address table. The logical
+  addresses and service IDs live **inside scripts keyed by profile**; the
+  physical CAN IDs live in CarCom `T121_Config`, and the timing comes from
   per-ECU-variant rows.
 * The profile string is the interface between the halves, and it is
   comma-separated profile IDs parsed by `ParseString`.
-* `volvo_p3` hardcodes `P3_D6_MODULES`, which corresponds to the *P3* side of a
-  `VehType` switch whose only observed value here is `p2x`. That switch is the
-  natural place for this repository to hang a platform profile if it ever needs
-  more than one.
+* `volvo_p3` hardcodes `P3_D6_MODULES`. `VehType` is `p2x` in the shipped
+  configuration, but it is a three-character data value; no managed branch or
+  enumeration was found, so it is not a ready-made P2/P3 switch.
 
-The remaining step is decompressing one `ScriptContent.XmlDataCompressed` row.
-The parser names already establish that scripts carry `EcuAddress`, `ServiceId`
-and `Request`, so the open part is the values, not the shape.
+The script body is now readable: `XmlDataCompressed` is ZIP plus deflate, and
+decoded nodes carry `EcuAddress`, `EcuType`, `ServiceId` and `Request`. The
+values are node addresses, not CAN IDs; `T121_Config` supplies the CAN IDs. The
+remaining work is coverage, not format.
 
 ## Open questions
 
-1. **What values does a script actually carry?** The parser names establish the
-   shape (`EcuAddress`, `ServiceId`, `Request`, `OnNegativeResponse`), but every
-   `XmlDataCompressed` row is still zipped and none was opened, so no concrete
-   address or service ID was read. The compression scheme was not identified
-   either; `GetZippedScriptXml` names the operation but not the format.
-2. **What does `EcuAddress` mean on the wire?** Whether it is the physical
-   request ID, a diagnostic address below it, or a logical address depends on
-   the platform and was not confirmed.
-3. **What values does `VehType` take besides `p2x`?** The setting exists on
-   `ScriptProvider` and in `diagnostic.config.xml`, but no enumeration of
-   platforms was recovered, and `res/scripts/` is empty in this tree.
+1. **What values do scripts carry?** Two scripts are decoded: VCC-242880 carries
+   `EcuAddress=17` and `ServiceId=71`; VCC-241986 carries `EcuType=381101` and
+   service IDs 13, 41, 5, 6, 14, 63 and 66. Coverage across script types and
+   platforms, and the bodies that fail CRC, remain unread.
+2. **What does `EcuAddress` mean on the wire?** It is a CarCom node address
+   (`T121_Config.commAddress`), not a CAN ID. `T121_Config` supplies
+   `CanIdRX`/`CanIdTX`/`CanIdFunc`; the mapping was not dumped per platform.
+3. **What values does `VehType` take besides `p2x`?** No code branch or
+   enumeration was found; it is a three-character string carried as data. The
+   PIE WSDL constrains only its length.
 4. **How does `EcuNameFromVariantId` get its data?** The assembly carries only
-   four inline names, so the mapping must come from a resource or a database
-   table that has not been located.
-5. **Where do the timing values come from at runtime?** `VehCom2` executes
-   `GetRequestTimeoutAndResend @ECU={0}`, but which `ECU` it passes, and how it
-   derives that from the script's `EcuVariant`, was not traced through the method
-   bodies.
+   four inline names, so the mapping comes from a resource or a database table
+   that has not been located. It is display-side; it is not in the timing path.
+5. **Where do the timing values come from at runtime?** The `@ECU` chain is
+   traced from CarCom `EcuConfig.EcuVariantId` through `DiagnosticSetting` and
+   `DiceTimingLookup` to `DatabaseSession`. The concrete timing values were not
+   extracted from the MDF.
 6. **Does the client actually connect to DiCE in this tree?** The shipped
-   configuration is `NoCommConnection` with an empty tool name, so the live path
-   was not exercised here.
+   configuration is `NoCommConnection` with an empty tool name, so no device is
+   bound. The UI selection path and `DiagApp.exe` exist, but the live path was
+   not exercised here.
 
 ## Reproducing
 

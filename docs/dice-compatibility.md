@@ -16,22 +16,28 @@ layout as a hypothesis.
 | Artifact | Size | SHA-256 | Role |
 | --- | --- | --- | --- |
 | `DiCE32_x64.dll` | 790016 B | `5af341982e8785507aa639001e77a9ceec316ef3685c45718956a8800d89dc83` | primary decompilation target |
-| `TSDiCE32.dll` (= `DiCE32_wow64.dll` = `J2534_DLL_FILE_WOW64`) | 531456 B | `4dd4eb3bead080d6f7eedab3c93d587b2990ac7fe7565897a4085d0afb55a930` | the build VIDA actually loads |
+| `TSDiCE32.dll` (= `DiCE32_wow64.dll` = `J2534_DLL_FILE_WOW64`) | 531456 B | `4dd4eb3bead080d6f7eedab3c93d587b2990ac7fe7565897a4085d0afb55a930` | the 32-bit build; its WOW6432Node registry view names it |
 | `DiceUsb.sys` | 33280 B | `ccb78183635a9e422a9d703fd0575c3bd83859127766c07f9785801358683836` | kernel driver |
 | `RfcFWDL32.dll` | 81408 B | – | firmware download |
 
 **Which binary is authoritative.** `DiCE32_x64.dll` is the primary target, because
 it is the only one with a full set of decompiled bodies and it carries the
-`UnaryCommand` template instantiations that name most commands. But it is *not*
-the file VIDA loads: VIDA's diagnostic process is 32-bit, so the DLL beneath it
-is `TSDiCE32.dll`. Those two facts were reconciled rather than averaged — the
-installer's WOW64 payload, the `J2534_DLL_FILE_WOW64` cab entry, and the
-`TSDiCE32.dll` installed on the VIDA image are all the same bytes, SHA-256
-`4dd4eb3b…`. The 32-bit build's `URFQ_*`/`URFR_*` table was recovered separately and every
+`UnaryCommand` template instantiations that name most commands. The image
+installs both builds: `TSDiCE64.dll` is the 64-bit library and `TSDiCE32.dll`
+the 32-bit one. If VIDA's diagnostic process is 32-bit, as the earlier notes
+inferred, the DLL beneath it is `TSDiCE32.dll`. The installer's WOW64 payload,
+the `J2534_DLL_FILE_WOW64` cab entry, and the `TSDiCE32.dll` installed on the
+image are all the same bytes, SHA-256 `4dd4eb3b…`. The 32-bit build's `URFQ_*`/`URFR_*` table was recovered separately and every
 command ID matches the 64-bit table, so the ID space is not in doubt. As in the
 64-bit build it covers 57 of the 68 rows: the eleven it cannot name are the
 ones that never instantiate the template, namely the four hand-built commands,
 the two verified only at runtime, and the five still unidentified.
+
+The image's own registry carries both views. The 64-bit `SETEK - DiCE` key names
+`TSDiCE64.dll`, and the `WOW6432Node` mirror names `TSDiCE32.dll`. The 32-bit
+claim above therefore depends on the diagnostic process bitness, which is
+inferred rather than measured. The command-table analysis is unaffected: the
+32-bit and 64-bit tables agree.
 
 `DiCE32_x64.dll` is PE32+, image base `0x180000000`, seven sections, and 1206
 functions described by the `.pdata` exception directory. All function extents
@@ -229,14 +235,17 @@ mirror) with `Name`, `Automatic`, `Comport`, `BtAddress`, `BtAutomatic` and
 value, which is consistent with the driver never having run — the image has no
 `Enum\USB\VID_17AA&PID_D1CE` device instance either.
 
-**What the VIDA image does and does not contribute.** It bounds the problem in
-one useful way and disappoints in another. VIDA reaches the driver through a
-single wrapper, `VehCom2.DLL`, which enumerates the PassThru registry key and
-`LoadLibrary`s whatever the `FunctionLibrary` value names — so the coupling is
-by registry, not by import. But no component anywhere in the image selects a
-J2534 device, and the shipped configuration sets `DiagnosticConnection` to
-`NoCommConnection` with an empty `CommToolName`. There is therefore no vendor
-code path to copy for device selection.
+**What the VIDA image does and does not contribute.** The coupling is by
+registry, not by import, but it is split across more than one assembly.
+`Util.DLL` reads `Vendor`, `FunctionLibrary` and `ConfigApplication` from
+`PassThruSupport.04.04`; `VehCom2.DLL` selects by `CommToolName` and calls
+`LoadLibrary`; `UI.DLL` fills the comm-tool list and can launch the named
+`ConfigApplication`; and `DiagApp.exe` outside the VIDA directory is a second
+client that opens a named device. The shipped snapshot selects nothing:
+`DiagnosticConnection` is `NoCommConnection`, `CommToolName` is empty, and no
+USB device instance exists. So the vendor code path for selection does exist,
+but this snapshot leaves it unconfigured. A second pass records the split in
+`docs/vida-second-pass.md`.
 
 The image's only protocol-timing data is a SQL Express database,
 `VIDA/db/DiceTiming_Data.MDF`, whose lookup key is an ECU variant plus the raw

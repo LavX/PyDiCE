@@ -6,13 +6,19 @@ else is attached to it, and which database each part comes from.
 
 It answers the question a reader of `docs/vida-diagnostics-client.md` is left with.
 That note establishes that the read plan is a compressed script keyed by profile.
-It does not say where the sentence next to the code comes from. The answer is that
-it is a localized text row in `CarCom`, selected by an integer text id, not
-something interpreted from the fault.
+It does not say where the sentence next to the code comes from. VIDA has more
+than one description path: the DTC list procedure returns `T141_Block.name` as
+`Data`, the standard OBD description is a `T150_BlockValue` row pointing at a
+localized `T191` text, and the long article sentence is a separate `T191` row.
+None is interpreted from the fault.
 
 Nothing here was executed. The assemblies were read statically: PE/CLI metadata,
 member signatures, call edges, and user strings. The databases were searched as
 bytes, not attached to SQL Server.
+
+A second pass corrected the label path. `T147_BlockMetaDTC` scopes blocks to ECU
+variants; it is not the text join. The evidence is in
+`docs/vida-second-pass.md`.
 
 ## Target
 
@@ -83,8 +89,9 @@ Block.get_AsText          (CarCom.VehicleServices)
 
 `Block.get_DisplayText` calls `AsText` and `PpeText`, and
 `ResponseHandler.HandleBlockByType` calls `get_DisplayText` and
-`BlockValue.get_ValueText`. So the text a technician sees beside a DTC block is
-whatever row the text id points at, in the active language.
+`BlockValue.get_ValueText`. So for blocks that carry a text id, the text is
+whatever row the id points at, in the active language. DTC blocks are the
+exception; the next subsection shows their label comes from the block name.
 
 The assembly literals make the call concrete:
 
@@ -137,6 +144,27 @@ That is the pattern behind the long description: the article sentence names both
 the code and the component. A missing id has an explicit fallback,
 `TEXT NOT FOUND`.
 
+### Which text the DTC list procedure returns
+
+The DTC list procedure, `vadis_GetAllPossibleDtcsOnEcu`, returns
+`t141.name AS Data` and `SUBSTRING(t150.CompareValue, 3, 6)`. `T147` joins the
+block to an ECU variant, not to a text row. The `T141_Block` rows of type 10
+overwhelmingly carry `fkt190_Text = 0`, so the block text path does not supply
+their label.
+
+There are three text paths, and only one is the list label:
+
+| Path | Key | Supplies |
+| --- | --- | --- |
+| DTC list data | `T141_Block.name` | the structured fault text |
+| Standard OBD description | `T150_BlockValue.CompareValue` -> `fkt190_text_value` -> `T191_TextData` | the SAE-style description |
+| Long article sentence | `T191_TextData` by text id, no CarCom referrer found | article or info-element text |
+
+For `0x034211`, the value row points at text id 1,004,326, "Camshaft Position
+Sensor A Circuit Low (Bank 1 or single sensor)". The long sentence text id
+1,034,063 is a real `T191` row, but no CarCom table referenced it in a raw
+4-byte scan.
+
 ## What is attached as context
 
 `BizServices.CarCom.DB.DLL` exposes and names these stored procedures. They are
@@ -157,8 +185,9 @@ the second half of the answer, the part that is not the DTC text itself.
 
 Six schema families back this: `T152_Symptom`, `T153_SymptomCategory`,
 `T154_SymptomType`, `T156_SymptomSection`, `T158_Symptom_CSC`, plus
-`T147_BlockMetaDTC` for DTC block metadata. `T147` is the table that would carry
-the per-DTC code mapping; its columns were not read.
+`T147_BlockMetaDTC` for DTC block metadata. `T147` is an ECU-variant scope, not
+a per-DTC code mapping; its observed columns are `fkT141_Block` and
+`fkT100_EcuVariant`.
 
 This is the layer that produces "more context". VIDA does not only show the code
 and its sentence. It shows the customer symptom (component plus deviation), the
@@ -255,31 +284,34 @@ name the surrounding tabs: `Fault trace`, `Initial State`, `Selected CSC`,
 
 `observed` means this pass saw it directly in the shipped file. `inferred` means
 the evidence supports one reading and does not exclude another. `unverified`
-means the available evidence does not settle it.
+means the available evidence does not settle it. `contradicted` means the
+available evidence goes against the earlier wording.
 
 | Statement | Status | Basis |
 | --- | --- | --- |
 | The DTC read is invoked through a script service | observed | call edges from `PerformDtcReadoutOnEcu` to `RunDtcScript` and `RunEcmDtcScript` |
-| Block display text resolves through `vadis_GetText` by text id and language | observed | call edges plus procedure names and parameter literals |
+| Block display text resolves through `vadis_GetText` for blocks that carry a text id | observed | call edges plus procedure names and parameter literals |
 | `CarCom` holds the text and symptom tables | observed | `components.config.xml` plus SQL literals addressing `t190`, `t191`, `t141`, `t150` |
 | DTC description sentences exist in `CarComRT_Data.MDF` | observed | 122 UTF-16 string lines of the `Diagnostic trouble code (DTC) ...` form |
-| The fault list shows the text row, not a computed description | inferred | the block text path is the only display path found |
+| The DTC list procedure returns `T141_Block.name` as `Data` | observed | `vadis_GetAllPossibleDtcsOnEcu` selects `t141.name AS Data`; DTC blocks carry `fkt190_Text = 0` |
+| The standard OBD description joins through `T150_BlockValue` to `T191_TextData` | observed | `0x034211` -> text id 1,004,326 |
 | Status words are computed and translated, not read from the ECU | inferred | `Dtc` calculation methods plus `lblSB`/`lblSI` resource keys |
 | Service ids `AE1B`, `AE11`, `AE02`, `AE18` map to specific Volvo services | inferred | they appear only in compiled test method names and format literals |
-| A specific DTC code joins to a specific `T191` row | unverified | the MDF was not attached; the join goes through `T147_BlockMetaDTC`, whose columns were not read |
-| `T147_BlockMetaDTC` carries the DTC-to-text mapping | unverified | the table name and its presence in DTC metadata are observed; the columns are not |
-| The script body drives the same block definitions end to end | unverified | `ScriptContent.XmlDataCompressed` was not decompressed |
+| `T147_BlockMetaDTC` carries the DTC-to-text mapping | contradicted | it carries `fkT141_Block` and `fkT100_EcuVariant`; no code, text or language column was observed |
+| The script body drives the same block definitions end to end | unverified | the script ZIP and node shape are read; the block definitions were not matched |
 
 ## What this means for PyDiCE
 
 Three things transfer, and one does not.
 
-The transferable part is the shape of the data, not the tables. A diagnostic
-description in VIDA is an indirection: code, then text id, then a localized row,
-then symptom records that name a component and a deviation. `volvo_p3` currently
-returns codes and, for generic OBD, the standard descriptions. If this repository
-ever wants VIDA-style descriptions, that is a data pipeline problem, and the
-missing artifact is a code-to-description map, not more protocol work.
+The transferable part is the shape of the data, not the tables. VIDA does not
+use one description path: the list procedure returns `T141_Block.name` as
+`Data`, the standard OBD description is a `T150_BlockValue` row pointing at a
+localized `T191` text, and the long article sentence is a separate `T191` row.
+Symptom records add the component and deviation. `volvo_p3` currently returns codes and, for generic
+OBD, the standard descriptions. If this repository ever wants VIDA-style
+descriptions, that is a data pipeline problem, and the missing artifact is a
+code-to-description map, not more protocol work.
 
 The second transferable part is that the counter and status history is what turns
 a list of codes into a diagnosis. `Dtc` needs a previous readout to say
@@ -301,20 +333,24 @@ platform can key descriptions by code directly.
 
 ## Open questions
 
-1. **What is the row-level join?** `T147_BlockMetaDTC` is the missing table.
-   Attaching `CarComRT_Data.MDF` to SQL Server and dumping `T147`, `T141`, and
-   `T190` would settle whether the DTC code or its description is the block text.
-2. **Which row is the short name?** The fault list and the fault-tracing article
-   may use two different text ids for the same code. Only an attached database
-   distinguishes them.
-3. **How is the code string built?** A three-byte DTC record plus format bits is
-   the usual encoding. Whether VIDA formats it in IL or reads it from a text row
-   was not determined.
+1. **What is the row-level join?** `T147_BlockMetaDTC` is not the text join; it
+   carries `fkT141_Block` and `fkT100_EcuVariant`. The DTC value text joins
+   through `T150_BlockValue.fkt190_text_value`. Remaining: a possible third
+   `T147` column, the exact T150 block-id offset, and who references the long
+   article text id.
+2. **Which row is the short name?** The DTC list uses `T141_Block.name`; the
+   standard OBD description is the `T150_BlockValue` value text. The UI binding
+   to `DtcVO.Text` was not decompiled, so which field the fault list prints is
+   still open.
+3. **How is the code string built?** `T150_BlockValue.CompareValue` is text
+   (`0x034211`), and the same row carries `P034211`. Whether VIDA formats the
+   letter prefix in IL or reads it from a text row was not determined.
 4. **What do `AE1B`, `AE11`, `AE02`, and `AE18` mean?** They appear only in test
    method names and format literals. They look like service identifiers, and the
    test payloads are three-byte DTC records, but the mapping is inferred.
-5. **What is inside the script?** `ScriptContent.XmlDataCompressed` was not
-   decompressed. That is the same gap as in `docs/vida-diagnostics-client.md`.
+5. **What is inside the script?** `ScriptContent.XmlDataCompressed` is ZIP plus
+   deflate; concrete `EcuAddress`, `EcuType` and `ServiceId` values are in
+   `docs/vida-second-pass.md`. Coverage across the script set remains open.
 6. **Do the status bits match ISO 14229?** `lblSB00` through `lblSB12` suggest a
    bit naming scheme. The bit assignment was not read.
 

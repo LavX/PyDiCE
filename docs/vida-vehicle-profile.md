@@ -10,7 +10,8 @@ The goal is not to copy the UI. It is to capture the shape of the data model.
 
 Nothing here was measured on a running VIDA. Everything is read from the files in
 that tree: Java class files, JSP/JS, and the SQL Server database files. The only
-runtime evidence is the logs it contains.
+runtime evidence is the logs it contains. A second pass closed the `fkNodeECU`
+lead and mapped the script path; see `docs/vida-second-pass.md`.
 
 ## Target
 
@@ -84,7 +85,7 @@ WHERE VP.fkPartnerGroup = ? AND VP.fkVehicleModel = ?
 | `fkBrakeSystem`, `fkSuspension`, `fkStructureWeek` | not exposed in the picker, database only |
 | `ChassisNoFrom`, `ChassisNoTo` | chassis range |
 | `FolderLevel` | `0` = generic profile, `3` = fully specific leaf |
-| `fkNodeECU` | per-profile ECU link |
+| `fkNodeECU` | scalar FK loaded into the VO; no shipped consumer found |
 
 `VehicleProfileVO` exposes all of these. `VehicleVO`, which is what the session
 carries, exposes only the seven pickable components plus `partnerGroup`, `title`
@@ -273,10 +274,11 @@ observed behaviour rather than from the VIDA table itself.
    (`GetScript`). The parser names show `EcuAddress` and `ServiceId` inside that
    script, so the profile reaches the car indirectly. No script value was read,
    so the effect on the wire remains unproven.
-2. **What consumes `fkNodeECU`?** `VehicleProfileDAO` selects it into
-   `VehicleProfileVO`, but `getNodeECU` has no caller in `VidaEjb`, `VidaData`,
-   or the 279 `VidaWeb` classes. Either the Windows client reads it, or it is
-   vestigial. This is the most promising lead for a per-profile ECU list.
+2. **What consumes `fkNodeECU`?** A second pass found no shipped consumer:
+   `VehicleProfileDAO` selects it into `VehicleProfileVO`, `getNodeECU` has no
+   caller, and no managed PE or Java class consumes it. The script is the
+   logical addressing map and CarCom `T121_Config` is the physical map. The
+   `NodeECU` rows were not enumerated, so the table is not proven vestigial.
 3. **What are the `FolderLevel` values between 0 and 3?** Only 0 and 3 are
    observed. 1 and 2 are assumed to be intermediate hierarchy nodes; nothing read
    so far confirms it.

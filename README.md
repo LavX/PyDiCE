@@ -58,8 +58,9 @@ Background material lives under `docs/`: the native path in
 [dice-compatibility.md](docs/dice-compatibility.md), and the VIDA reference notes
 in [vida-vehicle-profile.md](docs/vida-vehicle-profile.md),
 [vida-diagnostics-client.md](docs/vida-diagnostics-client.md),
-[vida-dtc-readout.md](docs/vida-dtc-readout.md), and
-[vida-image-boundary.md](docs/vida-image-boundary.md).
+[vida-dtc-readout.md](docs/vida-dtc-readout.md),
+[vida-image-boundary.md](docs/vida-image-boundary.md), and
+[vida-second-pass.md](docs/vida-second-pass.md).
 
 ## Scope From VIDA Help
 
