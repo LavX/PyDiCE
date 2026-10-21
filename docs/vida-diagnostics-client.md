@@ -164,6 +164,74 @@ engine and transmission from a profile list, requires `fkPartnerGroup is null`,
 and takes `TOP 1` ordered by engine then transmission descending, so a
 presentation profile is always chosen even when the caller passed a set.
 
+## Script structure
+
+`BizServices.Scripting.DLL` carries the element and attribute names the parser
+uses. The root is `script`, with `script/@docno`, `script/@VariantId`,
+`script/title` and `script/content`. Inside, the names that matter for a read:
+
+| Group | Names |
+| --- | --- |
+| ECU identity | `ecu`, `EcuAddress`, `TesterAddress`, `EcuIdentifier`, `EcuName`, `EcuType`, `EcuVariant` |
+| Messaging | `Request`, `Response`, `ServiceId`, `OnNegativeResponse`, `OnNoResponse`, `ADDR` |
+| Sections | `readingParameters/section`, `activations/section`, `programmedValues/section`, `specialTools/section` |
+| Structure | `nodes/node`, `handlers/eventhandler`, `handlers/propertyhandler`, `valuelist/item` |
+| Faults | `Dtc`, `DtcList`, `DTC1` to `DTC3` |
+
+Supporting strings describe the runtime around them: `Alive Ecus:`,
+`Dead Ecus:`, `Ecus not in car config:`, `Unknown ECU`, `Unknown response
+type`, `Could not build request`, `Car config parameters:`, `Vehicle info
+parameters:`, `Error executing script`, and `Not a valid EcuMode`.
+
+Two consequences. First, an `EcuAddress` field means the script **does** carry
+CAN addressing, so the read plan is per-vehicle data rather than code, and the
+profile-selected script is where a per-module address actually lives. Second,
+`Alive Ecus:` and `Dead Ecus:` plus `Ecus not in car config:` mean the client
+tracks which modules answered and compares against a car configuration before
+deciding what to read.
+
+The element semantics above are read from parser names, not from decompiled
+bodies, so treat the field meanings as inferred even though the names are
+observed.
+
+Scripts are fetched from the database already zipped (`GetFromDb`,
+`GetZippedScriptXml`, `GetOneScriptFromDb`) or read from disk through
+`IsScriptOnDisk` and `FormatScriptPath`, which build a path ending in `.xmlds`.
+No `.xmlds` file exists anywhere in this tree, so every script here comes from
+the database.
+
+## How it reaches the bus
+
+`VehCom2.DLL` is the J2534 layer. Its strings show ISO15765 and ISO9141
+handling, five-baud init (`Calling FiveBaudInit on address 0x{0:X}`,
+`fivebaudinit (RS2000)`), J2534-2 detection, message filtering
+(`PassThruStartMsgFilter`, `FilterBuffer() invalid D2 frame`) and both CAN
+high and low speed paths (`J2534 cannot access CAN LS bus`).
+
+The timing database is consumed here, not in the web application:
+
+```
+EXECUTE GetRequestTimeoutAndResend @ECU={0}
+```
+
+and applied per protocol:
+
+```
+New ISO9141 timing set. P1max:{0}, P3min:{1}, P4min:{2}
+P2Can: {0} ms, P2*Can: {1} ms, P4Can: {2} ms
+Adjusting P2CanServerMax from {0} ms to {1} ms due to session parameters
+P2CanDelta
+P2CanServerMax deviation: {0} ms
+P4CanServerMax deviation: {0} ms
+```
+
+The chain the artifacts describe runs end to end: profile set selects a script,
+the script names ECUs with addresses and services, and the comm layer looks up
+per-ECU-variant timeout and resend from `DiceTiming` and pushes `P2Can`/`P4Can`
+into the J2534 channel. That is how two vehicle types could produce different
+traffic. What is still missing is a script body: the schema says addresses and
+services are there, but no value from one was read.
+
 ## Timing
 
 `db/DiceTiming_Data.MDF` supplies `P1max`, `P3min`, `P4min`, `Timeout` and
@@ -175,33 +243,41 @@ and `EcuNameFromVariantId` is what would let a caller join the two.
 
 The mechanism is now clear enough to stop guessing about it:
 
-* VIDA does not ship a vehicle-to-ECU-address map. It ships **scripts keyed by
-  profile**, plus per-ECU-variant timing.
-* The profile string is the interface between the two halves, and it is
+* VIDA does not ship a separate vehicle-to-ECU-address table. The addresses and
+  service IDs live **inside scripts keyed by profile**, and the timing comes from
+  per-ECU-variant rows.
+* The profile string is the interface between the halves, and it is
   comma-separated profile IDs parsed by `ParseString`.
 * `volvo_p3` hardcodes `P3_D6_MODULES`, which corresponds to the *P3* side of a
   `VehType` switch whose only observed value here is `p2x`. That switch is the
   natural place for this repository to hang a platform profile if it ever needs
   more than one.
 
-The next concrete step would be decompressing one `ScriptContent.XmlDataCompressed`
-row to see whether the script records ECU request IDs and services, which is the
-only way to confirm the script encodes the read plan rather than only UI text.
+The remaining step is decompressing one `ScriptContent.XmlDataCompressed` row.
+The parser names already establish that scripts carry `EcuAddress`, `ServiceId`
+and `Request`, so the open part is the values, not the shape.
 
 ## Open questions
 
-1. **What is inside a script?** `XmlDataCompressed` needs decompression. Until
-   then, "the script is the readout" rests on the join and the column name, not
-   on the script body.
-2. **What values does `VehType` take besides `p2x`?** The setting exists on
+1. **What values does a script actually carry?** The parser names establish the
+   shape (`EcuAddress`, `ServiceId`, `Request`, `OnNegativeResponse`), but every
+   `XmlDataCompressed` row is still zipped and none was opened, so no concrete
+   address or service ID was read. The compression scheme was not identified
+   either; `GetZippedScriptXml` names the operation but not the format.
+2. **What does `EcuAddress` mean on the wire?** Whether it is the physical
+   request ID, a diagnostic address below it, or a logical address depends on
+   the platform and was not confirmed.
+3. **What values does `VehType` take besides `p2x`?** The setting exists on
    `ScriptProvider` and in `diagnostic.config.xml`, but no enumeration of
    platforms was recovered, and `res/scripts/` is empty in this tree.
-3. **How does `EcuNameFromVariantId` get its data?** The assembly carries only
+4. **How does `EcuNameFromVariantId` get its data?** The assembly carries only
    four inline names, so the mapping must come from a resource or a database
    table that has not been located.
-4. **Is `res/scripts/` ever populated?** The directory does not exist and no
-   script files ship, so file-based scripts are either optional or generated.
-5. **Does the client actually connect to DiCE in this tree?** The shipped
+5. **Where do the timing values come from at runtime?** `VehCom2` executes
+   `GetRequestTimeoutAndResend @ECU={0}`, but which `ECU` it passes, and how it
+   derives that from the script's `EcuVariant`, was not traced through the method
+   bodies.
+6. **Does the client actually connect to DiCE in this tree?** The shipped
    configuration is `NoCommConnection` with an empty tool name, so the live path
    was not exercised here.
 

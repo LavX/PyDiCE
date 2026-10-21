@@ -206,6 +206,13 @@ That distinction matters: the profile selects which information is shown, while
 the variant plus request bytes select how long to wait and whether to resend.
 Both are vehicle-dependent, along different axes.
 
+The consumer is the J2534 layer, not the web application. `VehCom2.DLL` executes
+`GetRequestTimeoutAndResend @ECU={0}` and pushes the result into the channel:
+`New ISO9141 timing set. P1max:{0}, P3min:{1}, P4min:{2}` for the older protocol,
+and `P2Can: {0} ms, P2*Can: {1} ms, P4Can: {2} ms` for CAN, including
+`Adjusting P2CanServerMax from {0} ms to {1} ms due to session parameters`.
+Details in `docs/vida-diagnostics-client.md`.
+
 ## Runtime confirmation
 
 `System/Log/VidaTrace.log` and `server.log` show the same path in flight:
