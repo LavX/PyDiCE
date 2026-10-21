@@ -90,6 +90,15 @@ class SectionSpec:
     actions: tuple[ActionSpec, ...]
 
 
+@dataclass(frozen=True)
+class NativeScanResult:
+    """Outcome of one native CLI scan: the saved report and its log lines."""
+
+    report_path: Path
+    profile_path: Path | None = None
+    lines: tuple[str, ...] = ()
+
+
 @dataclass
 class VehicleState:
     vin: str = ""
@@ -114,6 +123,7 @@ def _parse_ecu_list(text: str) -> list[int]:
 
 DEFAULT_DIAG_CATALOG = "reports/diag_catalog.json"
 DEFAULT_DIAG_SCAN = "reports/my-car-complete.json"
+DEFAULT_LIVE_TIMEOUT = "1.5"
 
 
 def default_diag_catalog_path() -> str:
@@ -126,6 +136,57 @@ def default_diag_scan_path() -> str:
     """Return the conventional saved scan path."""
 
     return DEFAULT_DIAG_SCAN
+
+
+def default_live_diag_profile_path() -> str:
+    """Return the conventional saved profile path, or blank when it is absent."""
+
+    return DEFAULT_DIAG_SCAN if Path(DEFAULT_DIAG_SCAN).is_file() else ""
+
+
+def _timeout_text(value: str | float | None) -> str:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("timeout must be a positive finite number") from None
+    if not 0 < timeout < float("inf"):
+        raise ValueError("timeout must be a positive finite number")
+    return str(timeout)
+
+
+def build_live_scan_options(
+    catalog_path: str | os.PathLike[str],
+    timeout: str | float | None = DEFAULT_LIVE_TIMEOUT,
+    profile_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Return the read-only ``dice-scan`` options for one live DTC read.
+
+    The catalog and the optional saved profile are checked before any scan
+    starts, so a missing file becomes an error line instead of a failed
+    adapter session. The profile is only read, never refreshed.
+    """
+
+    catalog_text = str(catalog_path).strip()
+    if not catalog_text:
+        raise ValueError("enter a service catalog JSON path")
+    catalog_file = Path(catalog_text)
+    if not catalog_file.is_file():
+        raise FileNotFoundError("catalog not found: {}".format(catalog_file))
+
+    options = [
+        "--timeout",
+        _timeout_text(timeout),
+        "--diag-catalog",
+        str(catalog_file),
+    ]
+
+    profile_text = str(profile_path).strip() if profile_path is not None else ""
+    if profile_text:
+        profile_file = Path(profile_text)
+        if not profile_file.is_file():
+            raise FileNotFoundError("profile not found: {}".format(profile_file))
+        options.extend(("--profile", str(profile_file)))
+    return options
 
 
 def diag_catalog_mapping(catalog: DiagnosticCatalog) -> dict[str, Any]:
@@ -361,6 +422,53 @@ def diag_fault_trace_lines(
 
     return _safe_diag_report_lines(
         scan_path, catalog_path, vehicle, format_diag_fault_lines
+    )
+
+
+def format_live_diag_lines(
+    report: DiagnosticReport,
+    *,
+    report_path: str | os.PathLike[str] | None = None,
+    catalog_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Format one live read as counts, fault trace, and network status."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    lines = ["Live DTC read: {}".format(_diag_report_title(report))]
+    if report_path is not None and str(report_path).strip():
+        lines.append("saved report: {}".format(report_path))
+    if catalog_path is not None and str(catalog_path).strip():
+        lines.append("catalog: {}".format(catalog_path))
+    if report.scan_status:
+        lines.append("scan status: {}".format(report.scan_status))
+    lines.append("")
+    lines.extend(format_diag_dtc_lines(report))
+    lines.append("")
+    lines.extend(format_diag_fault_lines(report))
+    lines.append("")
+    lines.extend(format_diag_network_lines(report))
+    return lines
+
+
+def build_live_diag_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+    *,
+    report_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Load a just-saved scan and format it, or return a single error line."""
+
+    try:
+        report = build_diag_report(scan_path, catalog_path, vehicle)
+    except (OSError, ValueError, TypeError) as exc:
+        return ["error: {}".format(exc)]
+    return format_live_diag_lines(
+        report,
+        report_path=report_path if report_path is not None else scan_path,
+        catalog_path=catalog_path,
     )
 
 
@@ -665,6 +773,16 @@ class VolvoTuiApp:
                         (FieldSpec("diag_catalog", "Catalog JSON", default_diag_catalog_path()),),
                     ),
                     ActionSpec(
+                        "Live DTC Read",
+                        "Run one read-only scan with the service catalog and show DTC counts, fault trace, and network status.",
+                        self._diag_live_read,
+                        (
+                            FieldSpec("live_catalog", "Catalog JSON", default_diag_catalog_path()),
+                            FieldSpec("live_timeout", "Timeout per module in seconds", DEFAULT_LIVE_TIMEOUT),
+                            FieldSpec("live_profile", "Saved profile JSON (optional)", default_live_diag_profile_path()),
+                        ),
+                    ),
+                    ActionSpec(
                         "DTC Overview",
                         "List modules and DTCs from a saved scan report, with catalog descriptions when present.",
                         self._diag_dtc_overview,
@@ -781,7 +899,7 @@ class VolvoTuiApp:
             )
         )
 
-    def _run_native_scan(self, options: list[str], *, profile_path: Path | None = None) -> list[str]:
+    def _run_native_scan_result(self, options: list[str], *, profile_path: Path | None = None) -> NativeScanResult:
         # Import only when selected: the CLI also imports this module for its TUI command.
         if __package__ in (None, ""):
             from volvo_p3.cli import main as cli_main
@@ -834,19 +952,20 @@ class VolvoTuiApp:
 
         if exit_code:
             raise RuntimeError(f"native DiCE scan exited with code {exit_code}")
-        lines = []
-        lines.append(f"Saved scan: {output}")
+        lines = [f"Saved scan: {output}"]
         if profile_path is not None and profile_path.exists():
             lines.append(f"Saved module profile: {profile_path}")
             self._last_values["native_profile"] = str(profile_path)
-        return lines
+        return NativeScanResult(output, profile_path, tuple(lines))
+
+    def _run_native_scan(self, options: list[str], *, profile_path: Path | None = None) -> list[str]:
+        """Run one native scan and return only its log lines."""
+
+        return list(self._run_native_scan_result(options, profile_path=profile_path).lines)
 
     @staticmethod
     def _native_timeout(values: dict[str, str]) -> str:
-        timeout = float(values["native_timeout"])
-        if not 0 < timeout < float("inf"):
-            raise ValueError("timeout must be a positive finite number")
-        return str(timeout)
+        return _timeout_text(values["native_timeout"])
 
     def _native_known_scan(self, values: dict[str, str]) -> list[str]:
         return self._run_native_scan(["--timeout", self._native_timeout(values)])
@@ -1117,6 +1236,33 @@ class VolvoTuiApp:
 
     def _diag_load_catalog(self, values: dict[str, str]) -> list[str]:
         return build_diag_catalog_view(values.get("diag_catalog", ""))
+
+    def _diag_live_read(self, values: dict[str, str]) -> list[str]:
+        catalog = values.get("live_catalog", "")
+        try:
+            options = build_live_scan_options(
+                catalog,
+                values.get("live_timeout", DEFAULT_LIVE_TIMEOUT),
+                values.get("live_profile", ""),
+            )
+        except (OSError, ValueError) as exc:
+            return ["error: {}".format(exc)]
+
+        try:
+            result = self._run_native_scan_result(options)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ["error: live DTC read failed: {}".format(exc)]
+
+        lines = list(result.lines)
+        lines.extend(
+            build_live_diag_lines(
+                result.report_path,
+                catalog,
+                self._diag_vehicle(),
+                report_path=result.report_path,
+            )
+        )
+        return lines
 
     def _diag_dtc_overview(self, values: dict[str, str]) -> list[str]:
         return diag_dtc_overview_lines(
