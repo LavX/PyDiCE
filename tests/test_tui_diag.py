@@ -215,7 +215,7 @@ class DiagReportTests(unittest.TestCase):
         self.assertIn("dtc descriptions: 5 (4 codes)", lines)
 
     def test_default_catalog_path_is_compressed(self):
-        self.assertEqual(DEFAULT_DIAG_CATALOG, "data/diag_catalog.json.gz")
+        self.assertEqual(DEFAULT_DIAG_CATALOG, "data/diag_catalog.json.xz")
 
     def test_catalog_view_handles_missing_and_blank_paths(self):
         missing = build_diag_catalog_view(MISSING)

@@ -121,7 +121,7 @@ def _parse_ecu_list(text: str) -> list[int]:
 
 # Diagnostic data views -------------------------------------------------------------
 
-DEFAULT_DIAG_CATALOG = "data/diag_catalog.json.gz"
+DEFAULT_DIAG_CATALOG = "data/diag_catalog.json.xz"
 DEFAULT_DIAG_SCAN = "reports/my-car-complete.json"
 DEFAULT_LIVE_TIMEOUT = "1.5"
 

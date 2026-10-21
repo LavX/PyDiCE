@@ -23,7 +23,7 @@ modify the source image.
 ```sh
 python3 tools/export_diag_catalog.py \
   --image /mnt/vida \
-  --out data/diag_catalog.json.gz
+  --out data/diag_catalog.json.xz
 ```
 
 The `--out` suffix selects the encoding: `.json` for plain UTF-8, `.json.gz`
@@ -37,7 +37,7 @@ instead of a plain tree:
 ```sh
 python3 tools/export_diag_catalog.py \
   --image /mnt/vida \
-  --dump-archive data/diag_dump.tar.gz
+  --dump-archive data/diag_dump.tar.xz
 ```
 
 `--dump-archive` also works next to `--dump-dir`, which keeps the plain tree
@@ -73,9 +73,9 @@ See `docs/diag-catalog-export.md` for the exact coverage and blockers.
 Inspect the catalog:
 
 ```sh
-python3 -m volvo_p3.cli diag-catalog --catalog data/diag_catalog.json.gz
+python3 -m volvo_p3.cli diag-catalog --catalog data/diag_catalog.json.xz
 python3 -m volvo_p3.cli diag-catalog \
-  --catalog data/diag_catalog.json.gz --code P034211
+  --catalog data/diag_catalog.json.xz --code P034211
 ```
 
 Build diagnostic views from a saved scan:
@@ -83,7 +83,7 @@ Build diagnostic views from a saved scan:
 ```sh
 python3 -m volvo_p3.cli diag-report \
   --scan reports/dice-scan-TIMESTAMP.json \
-  --catalog data/diag_catalog.json.gz \
+  --catalog data/diag_catalog.json.xz \
   --view all
 ```
 
@@ -92,7 +92,7 @@ Attach the same diagnostics to a live scan:
 ```sh
 sudo python3 -m volvo_p3.cli dice-scan \
   --discover --timeout 0.5 \
-  --diag-catalog data/diag_catalog.json.gz
+  --diag-catalog data/diag_catalog.json.xz
 ```
 
 The saved report then carries a `diagnostics` object with module, network,
@@ -142,7 +142,7 @@ The TUI has a `Service Data` menu with:
 - Script Plan
 
 The DTC and network views read a saved scan report. They do not open the
-adapter themselves. The default catalog path is `data/diag_catalog.json.gz`;
+adapter themselves. The default catalog path is `data/diag_catalog.json.xz`;
 the Load Catalog field accepts any plain or compressed catalog suffix.
 
 ## Safety

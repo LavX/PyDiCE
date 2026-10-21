@@ -10,7 +10,7 @@ optional compressed form selected by its suffix. The raw dump is optional and
 can be written as a plain tree or one archive.
 
 ```sh
-python3 tools/export_diag_catalog.py --image /mnt/vida --out catalog.json.gz
+python3 tools/export_diag_catalog.py --image /mnt/vida --out catalog.json.xz
 python3 tools/export_diag_catalog.py --image /mnt/vida --dump-dir /tmp/diag-dump
 python3 tools/export_diag_catalog.py --image /mnt/vida --dump-archive data/diag_dump.tar.xz
 python3 tools/export_diag_catalog.py --from-json input.json --out catalog.json.bz2
