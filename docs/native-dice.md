@@ -46,3 +46,15 @@ The full recovered command surface is in `docs/dice-compatibility.md`, and `pyth
 `dice-scan --discover --timeout 0.5 --save-profile reports/my-car.json` saves all responding targets, including incomplete responses. Read that profile with `dice-scan --profile reports/my-car.json --timeout 1.5`. Omit `--all-records` for a concise fault/history list. To deliberately refresh an existing profile, add `--replace-profile` to the discovery command.
 
 The initial response timeout is independent of ISO-TP assembly: after a first frame, each consecutive frame has a one-second window, bounded by ten seconds total transfer time. An incomplete response remains distinct from an empty DTC list.
+
+## Vehicle profile
+
+`volvo_p3/tui.py` has a "Create Profile" action with `vin`, `year`, and `model` fields, but only the VIN is stored. `year` and `model` are echoed into one confirmation line and discarded, and `VehicleState` has no field to hold them. Nothing in the read path consults them, so two different model years produce identical bus traffic.
+
+VIDA 2014D models the same concept as a row in `dbo.VehicleProfile`: a partner group plus up to seven component foreign keys (model, year, body style, engine, transmission, steering, special vehicle), an optional chassis range, and three database-only columns the picker never shows. A selection resolves to a *set* of profile IDs, where a null component on a candidate profile acts as a wildcard, so a partial selection still matches. A generic profile at `FolderLevel = 0` is always included.
+
+Two points matter for this transport. First, on the Java side those profile IDs filter service information, parts, and symptom data only; no evidence shows them selecting ECUs or changing bus traffic. Second, each profile row carries `fkNodeECU`, which is loaded into `VehicleProfileVO` but has no caller in `VidaEjb`, `VidaData`, or the 279 `VidaWeb` classes. That link is the best remaining lead for a per-profile module list, and it is unresolved.
+
+Until that question closes, `module_scan` target selection stays explicit: `P3_D6_MODULES`, a discovery sweep, or a JSON profile. The transferable idea is the shape, not the tables: nullable components with wildcard matching and an always-valid generic profile, resolving to a set of module profiles that get scanned as a union.
+
+The full recovery, including the cascade SQL and the stored procedures, is in `docs/vida-vehicle-profile.md`.
