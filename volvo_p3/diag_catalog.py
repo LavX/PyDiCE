@@ -9,7 +9,10 @@ asks at runtime:
 * How long should a request to this ECU variant wait?
 * Which profiles and scripts does the catalog know about?
 
-The catalog file is JSON only. It has seven sections:
+The catalog file is JSON. The loader and writer select the codec from the
+path suffix: ``.json`` is plain UTF-8, ``.json.gz`` uses gzip, ``.json.bz2``
+uses bzip2, ``.json.xz`` uses xz, and ``.zip`` is a zip archive containing
+exactly one JSON member. It has seven sections:
 
 .. code-block:: json
 
@@ -90,9 +93,16 @@ source image, or transforms an existing JSON document with ``--from-json``.
 
 from __future__ import annotations
 
+import bz2
+import contextlib
+import gzip
+import io
 import json
+import lzma
 import os
 import re
+import zipfile
+import zlib
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -629,22 +639,129 @@ def sanitize_text(value: Optional[str]) -> Optional[str]:
     return cleaned.strip()
 
 
-def load_catalog(path: Union[str, os.PathLike[str]]) -> DiagnosticCatalog:
-    """Load and validate a catalog JSON file.
+_CATALOG_SUFFIXES = (
+    (".json.gz", "gzip"),
+    (".json.bz2", "bzip2"),
+    (".json.xz", "xz"),
+    (".json.zip", "zip"),
+    (".zip", "zip"),
+    (".json", "json"),
+)
 
-    ``CatalogError`` wraps JSON syntax errors and every schema violation.
-    File-system errors propagate unchanged.
+_FORMAT_LABELS = {
+    "json": "plain JSON",
+    "gzip": "gzip",
+    "bzip2": "bzip2",
+    "xz": "xz",
+    "zip": "zip",
+}
+
+
+def catalog_format(path: Union[str, os.PathLike[str]]) -> str:
+    """Return the serialization format selected by a catalog path suffix.
+
+    The accepted suffixes are ``.json``, ``.json.gz``, ``.json.bz2``,
+    ``.json.xz`` and ``.zip``. Matching is case-insensitive.
     """
 
+    text = os.fspath(path)
+    lower = text.lower()
+    for suffix, name in _CATALOG_SUFFIXES:
+        if lower.endswith(suffix):
+            return name
+    raise CatalogError(
+        "unsupported catalog suffix for {!r}; expected .json, .json.gz, "
+        ".json.bz2, .json.xz or .zip".format(text)
+    )
+
+
+def _zip_catalog_member(
+    path: Union[str, os.PathLike[str]], archive: zipfile.ZipFile
+) -> zipfile.ZipInfo:
+    members = [item for item in archive.infolist() if not item.is_dir()]
+    json_members = [
+        item for item in members if item.filename.lower().endswith(".json")
+    ]
+    if len(json_members) != 1:
+        names = ", ".join(item.filename for item in json_members) or "none"
+        raise CatalogError(
+            "catalog zip {!r} must contain exactly one .json member; "
+            "found {}".format(os.fspath(path), names)
+        )
+    return json_members[0]
+
+
+def _read_catalog_document(
+    path: Union[str, os.PathLike[str]], fmt: str
+) -> Any:
     try:
+        if fmt == "gzip":
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                return json.load(handle)
+        if fmt == "bzip2":
+            with bz2.open(path, "rt", encoding="utf-8") as handle:
+                return json.load(handle)
+        if fmt == "xz":
+            with lzma.open(path, "rt", encoding="utf-8") as handle:
+                return json.load(handle)
+        if fmt == "zip":
+            with zipfile.ZipFile(path) as archive:
+                member = _zip_catalog_member(path, archive)
+                with archive.open(member) as raw:
+                    with io.TextIOWrapper(raw, encoding="utf-8") as handle:
+                        return json.load(handle)
         with open(path, "r", encoding="utf-8") as handle:
-            document = json.load(handle)
+            return json.load(handle)
     except json.JSONDecodeError as exc:
         raise CatalogError(
             "catalog is not valid JSON: {} (line {}, column {})".format(
                 exc.msg, exc.lineno, exc.colno
             )
         ) from exc
+    except (
+        gzip.BadGzipFile,
+        lzma.LZMAError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ) as exc:
+        raise CatalogError(
+            "catalog {} stream is corrupt: {}".format(_FORMAT_LABELS[fmt], exc)
+        ) from exc
+    except EOFError as exc:
+        raise CatalogError(
+            "catalog {} stream is truncated".format(_FORMAT_LABELS[fmt])
+        ) from exc
+    except (RuntimeError, NotImplementedError) as exc:
+        if fmt == "zip":
+            raise CatalogError(
+                "catalog zip archive is not readable: {}".format(exc)
+            ) from exc
+        raise
+    except OSError as exc:
+        if isinstance(
+            exc,
+            (FileNotFoundError, PermissionError, IsADirectoryError, NotADirectoryError),
+        ):
+            raise
+        if fmt != "json":
+            raise CatalogError(
+                "catalog {} stream is corrupt or truncated: {}".format(
+                    _FORMAT_LABELS[fmt], exc
+                )
+            ) from exc
+        raise
+
+
+def load_catalog(path: Union[str, os.PathLike[str]]) -> DiagnosticCatalog:
+    """Load and validate a catalog JSON file.
+
+    The codec is selected from the path suffix. ``CatalogError`` wraps JSON
+    syntax errors, schema violations and damaged compressed streams.
+    File-system errors propagate unchanged.
+    """
+
+    fmt = catalog_format(path)
+    document = _read_catalog_document(path, fmt)
     if not isinstance(document, dict):
         raise CatalogError("catalog root must be a JSON object")
     return catalog_from_dict(document)
@@ -853,10 +970,54 @@ def catalog_to_dict(catalog: DiagnosticCatalog) -> Dict[str, Any]:
     }
 
 
-def dump_catalog(catalog: DiagnosticCatalog, path: Union[str, os.PathLike[str]]) -> None:
-    """Write a catalog as UTF-8 JSON with a trailing newline."""
+def _zip_catalog_member_name(path: Union[str, os.PathLike[str]]) -> str:
+    name = os.path.basename(os.fspath(path))
+    if name.lower().endswith(".zip"):
+        name = name[:-4]
+    if not name.lower().endswith(".json"):
+        name += ".json"
+    return name
 
-    with open(path, "w", encoding="utf-8") as handle:
+
+@contextlib.contextmanager
+def _open_catalog_writer(
+    path: Union[str, os.PathLike[str]], fmt: str
+) -> Iterator[Any]:
+    if fmt == "gzip":
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            yield handle
+    elif fmt == "bzip2":
+        with bz2.open(path, "wt", encoding="utf-8") as handle:
+            yield handle
+    elif fmt == "xz":
+        with lzma.open(path, "wt", encoding="utf-8") as handle:
+            yield handle
+    elif fmt == "zip":
+        member = _zip_catalog_member_name(path)
+        with zipfile.ZipFile(
+            path, "w", compression=zipfile.ZIP_DEFLATED
+        ) as archive:
+            with archive.open(member, "w") as raw:
+                with io.TextIOWrapper(raw, encoding="utf-8") as handle:
+                    yield handle
+    else:
+        with open(path, "w", encoding="utf-8") as handle:
+            yield handle
+
+
+def dump_catalog(
+    catalog: DiagnosticCatalog, path: Union[str, os.PathLike[str]]
+) -> None:
+    """Write a catalog as UTF-8 JSON with a trailing newline.
+
+    The suffix selects the codec: ``.json.gz``, ``.json.bz2`` and
+    ``.json.xz`` write a compressed stream. ``.zip`` writes one JSON member
+    named after the archive, for example ``catalog.json.zip`` contains
+    ``catalog.json``.
+    """
+
+    fmt = catalog_format(path)
+    with _open_catalog_writer(path, fmt) as handle:
         json.dump(
             catalog_to_dict(catalog),
             handle,

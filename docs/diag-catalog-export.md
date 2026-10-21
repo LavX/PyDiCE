@@ -5,18 +5,72 @@ database and never executes a source binary. This note records what the export
 recovers, what it cannot recover from this snapshot, and how the dump is laid
 out.
 
-The image path is the only required input. The output catalog is JSON; the raw
-dump is optional.
+The image path is the only required input. The output catalog is JSON, with an
+optional compressed form selected by its suffix. The raw dump is optional and
+can be written as a plain tree or one archive.
 
 ```sh
-python3 tools/export_diag_catalog.py --image /mnt/vida --out catalog.json
+python3 tools/export_diag_catalog.py --image /mnt/vida --out catalog.json.gz
 python3 tools/export_diag_catalog.py --image /mnt/vida --dump-dir /tmp/diag-dump
-python3 tools/export_diag_catalog.py --from-json input.json --out catalog.json
+python3 tools/export_diag_catalog.py --image /mnt/vida --dump-archive data/diag_dump.tar.xz
+python3 tools/export_diag_catalog.py --from-json input.json --out catalog.json.bz2
+python3 tools/pack_diag_dump.py --input /tmp/diag-dump --output /tmp/diag-dump.zip
 ```
 
-`--out` still writes only the catalog. `--dump-dir` writes
-`<dump>/catalog.json`, bounded raw table summaries and the recovered script XML.
+`--out` still writes only the catalog. Its suffix selects plain JSON or gzip,
+bzip2 or xz compression. `--dump-dir` writes `<dump>/catalog.json`, bounded raw
+table summaries and the recovered script XML. `--dump-archive` packs the dump
+tree into one archive and can be used alone or together with `--dump-dir`.
 `--max-script-files N` caps the XML files without changing the catalog rows.
+
+## Compression and archives
+
+The catalog loader and writer in `volvo_p3.diag_catalog` select the codec from
+the path suffix. Both directions use the standard library, so no extra package
+is needed.
+
+| Catalog suffix | Encoding |
+| --- | --- |
+| `.json` | plain UTF-8 JSON |
+| `.json.gz` | gzip |
+| `.json.bz2` | bzip2 |
+| `.json.xz` | xz |
+| `.zip` | zip with exactly one JSON member |
+
+A `.zip` catalog is rejected when it holds zero or several JSON members, so the
+loader never guesses which document to read. `catalog.json.zip` writes a single
+member named `catalog.json`; `catalog.zip` also gets a member named
+`catalog.json`.
+
+The dump archive formats are selected the same way:
+
+| Archive suffix | Container |
+| --- | --- |
+| `.tar.gz` | gzip-compressed tar |
+| `.tar.xz` | xz-compressed tar |
+| `.zip` | deflate-compressed zip |
+
+`tools/pack_diag_dump.py` packs an existing dump through the same
+`volvo_p3.diag_archive.pack_dump` function the exporter uses. It prints the
+summed input size, the archive size and the compression ratio. The packer
+requires `catalog.json` at the dump root and refuses an archive path inside the
+dump directory.
+
+The archive holds the dump contents, not the dump directory itself:
+
+```
+catalog.json
+raw/
+  base_data.json
+  carcom_tables.json
+  ...
+scripts/
+  <docno>_<language>_<offset>.xml
+```
+
+Compression does not change the JSON document or its schema. A compressed
+catalog loads through `load_catalog` exactly like a plain one, and the
+`diag-catalog` and `diag-report` commands accept either form.
 
 ## Schema version 2
 
@@ -194,7 +248,9 @@ there is no common corrected form.
 
 `base_data.json`, `carcom_tables.json` and `scripts.json` are summaries, not a
 full 12 GB dump. The full profile and script content is in `catalog.json` and
-the recovered XML files.
+the recovered XML files. An archive written by `--dump-archive` or
+`tools/pack_diag_dump.py` keeps the same layout at its root; it does not add a
+top-level directory.
 
 ## Verification
 

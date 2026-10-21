@@ -17,7 +17,11 @@ process is started. The exporter reads MDF pages directly:
 
 ``--from-json`` accepts either a complete catalog or a small mapping and always
 works without an image. ``--dump-dir`` writes the catalog plus bounded raw table
-summaries and recovered script XML files.
+summaries and recovered script XML files. ``--out`` compresses the catalog when
+its suffix is ``.json.gz``, ``.json.bz2`` or ``.json.xz``. ``--dump-archive``
+packs the dump tree into one ``.tar.gz``, ``.tar.xz`` or ``.zip`` archive with
+``catalog.json`` at the archive root; it can be used alone, in which case the
+dump directory is temporary.
 
 The transform is validated by ``load_catalog`` before anything is written, so a
 malformed input cannot produce a catalog the runtime would reject.
@@ -34,6 +38,7 @@ import mmap
 import re
 import struct
 import sys
+import tempfile
 import zlib
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -60,6 +65,11 @@ from volvo_p3.diag_catalog import (  # noqa: E402
     catalog_from_dict,
     dump_catalog,
     sanitize_text,
+)
+from volvo_p3.diag_archive import (  # noqa: E402
+    DiagArchiveError,
+    format_bytes,
+    pack_dump,
 )
 from volvo_p3.script_plan import (  # noqa: E402
     DiagnosticScriptError,
@@ -1805,12 +1815,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        help="output JSON path (default: <dump-dir>/catalog.json)",
+        help=(
+            "output catalog path (default: <dump-dir>/catalog.json); "
+            ".json.gz, .json.bz2 and .json.xz compress it"
+        ),
     )
     parser.add_argument(
         "--dump-dir",
         type=Path,
         help="write catalog.json, raw table summaries and recovered script XML",
+    )
+    parser.add_argument(
+        "--dump-archive",
+        type=Path,
+        help=(
+            "pack the dump tree into one .tar.gz, .tar.xz or .zip archive "
+            "with catalog.json at its root; works without --dump-dir"
+        ),
     )
     parser.add_argument(
         "--language-id",
@@ -1842,32 +1863,42 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--quiet", action="store_true", help="suppress the summary")
 
     args = parser.parse_args(argv)
-    if args.out is None and args.dump_dir is None:
-        parser.error("one of --out or --dump-dir is required")
+    if args.out is None and args.dump_dir is None and args.dump_archive is None:
+        parser.error("one of --out, --dump-dir or --dump-archive is required")
 
+    archive_result = None
     try:
-        if args.from_json is not None:
-            catalog = build_from_json(args.from_json)
-            stats: Optional[Dict[str, Any]] = None
-            if args.dump_dir is not None:
-                catalog = write_dump(args.dump_dir, catalog, {})
-            output = args.out or (args.dump_dir / "catalog.json")
-            if args.out is not None:
-                dump_catalog(catalog, output)
-        else:
-            catalog, stats = build_from_image(
-                args.image,
-                language_id=args.language_id,
-                language_name=args.language,
-                include_sha256=not args.no_sha256,
-                repair_text=not args.no_text_repair,
-                dump_dir=args.dump_dir,
-                max_script_files=args.max_script_files,
+        with contextlib.ExitStack() as stack:
+            dump_dir = args.dump_dir
+            if dump_dir is None and args.dump_archive is not None:
+                dump_dir = Path(
+                    stack.enter_context(
+                        tempfile.TemporaryDirectory(prefix="pydice-diag-dump-")
+                    )
+                )
+            if args.from_json is not None:
+                catalog = build_from_json(args.from_json)
+                stats: Optional[Dict[str, Any]] = None
+                if dump_dir is not None:
+                    catalog = write_dump(dump_dir, catalog, {})
+            else:
+                catalog, stats = build_from_image(
+                    args.image,
+                    language_id=args.language_id,
+                    language_name=args.language,
+                    include_sha256=not args.no_sha256,
+                    repair_text=not args.no_text_repair,
+                    dump_dir=dump_dir,
+                    max_script_files=args.max_script_files,
+                )
+            output = args.out or (
+                args.dump_dir / "catalog.json" if args.dump_dir is not None else None
             )
-            output = args.out or (args.dump_dir / "catalog.json")
             if args.out is not None:
-                dump_catalog(catalog, output)
-    except (OSError, CatalogError) as exc:
+                dump_catalog(catalog, args.out)
+            if args.dump_archive is not None:
+                archive_result = pack_dump(dump_dir, args.dump_archive)
+    except (OSError, CatalogError, DiagArchiveError) as exc:
         print("error: {}".format(exc), file=sys.stderr)
         return 1
 
@@ -1920,7 +1951,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     len(catalog.symptom_definitions),
                 )
             )
-        print("Wrote {} ({} bytes)".format(output, output.stat().st_size))
+        if output is not None:
+            print("Wrote {} ({} bytes)".format(output, output.stat().st_size))
+        if archive_result is not None:
+            print(
+                "Wrote archive {} ({} bytes, {:.1f}% of {} bytes)".format(
+                    archive_result.output,
+                    archive_result.output_bytes,
+                    archive_result.ratio * 100.0,
+                    archive_result.input_bytes,
+                )
+            )
+            print(
+                "Archive input: {}, {} files".format(
+                    format_bytes(archive_result.input_bytes),
+                    archive_result.file_count,
+                )
+            )
     return 0
 
 

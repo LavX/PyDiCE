@@ -18,6 +18,7 @@ from volvo_p3.cli import (
 
 FIXTURES = Path(__file__).with_name("fixtures")
 CATALOG = FIXTURES / "diag_catalog.json"
+COMPRESSED_CATALOG = FIXTURES / "diag_catalog.json.gz"
 SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
 SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
 SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
@@ -120,6 +121,17 @@ def test_catalog_human_shows_source_and_counts(capsys):
     assert "Scripts: 1" in out
     assert "Symptom definitions: 0" in out
     assert "Freeze frames: 0" in out
+
+
+def test_catalog_accepts_a_compressed_catalog(capsys):
+    status = cmd_diag_catalog(
+        catalog_args(catalog=COMPRESSED_CATALOG, code="P034211")
+    )
+
+    out = capsys.readouterr().out
+    assert status == 0
+    assert "DTC P034211:" in out
+    assert "Camshaft Position Sensor A Circuit Low" in out
 
 
 def test_catalog_code_lookup_prints_catalog_text(capsys):
