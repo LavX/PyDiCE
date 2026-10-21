@@ -109,7 +109,7 @@ def test_catalog_human_shows_source_and_counts(capsys):
 
     out = capsys.readouterr().out
     assert status == 0
-    assert "Schema: pydice.diag_catalog version 1" in out
+    assert "Schema: pydice.diag_catalog version 2" in out
     assert "Source kind: synthetic" in out
     assert "Language: en-US" in out
     assert "Databases: 1" in out
@@ -118,6 +118,8 @@ def test_catalog_human_shows_source_and_counts(capsys):
     assert "Timing rows: 4" in out
     assert "Profiles: 1" in out
     assert "Scripts: 1" in out
+    assert "Symptom definitions: 0" in out
+    assert "Freeze frames: 0" in out
 
 
 def test_catalog_code_lookup_prints_catalog_text(capsys):
@@ -139,12 +141,14 @@ def test_catalog_json_includes_summary_and_lookup(capsys):
     assert status == 0
     assert list(payload) == sorted(payload)
     assert payload["schema"] == "pydice.diag_catalog"
-    assert payload["version"] == 1
+    assert payload["version"] == 2
     assert payload["counts"] == {
         "dtc_descriptions": 5,
         "timing": 4,
         "profiles": 1,
         "scripts": 1,
+        "symptom_definitions": 0,
+        "freeze_frames": 0,
     }
     assert payload["lookup"]["code"] == "P034211"
     assert payload["lookup"]["found"] is True

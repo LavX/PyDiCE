@@ -26,13 +26,17 @@ python3 tools/export_diag_catalog.py \
   --out reports/diag_catalog.json
 ```
 
-The current image produces 9,018 DTC descriptions and 41 timing rows. Profiles
-and scripts are empty in the catalog because those exports are not implemented
-yet. The DTC text comes from `T150_BlockValue`, `T191_TextData` and
-`T141_Block`.
+The current image produces 9,033 DTC descriptions, 41 timing rows, 134,459
+distinct vehicle profiles and 6,567 script entries (2,977 document numbers in
+40 languages). The DTC text comes from `T150_BlockValue`, `T191_TextData` and
+`T141_Block`; profiles come from `BaseData_Data.MDF`; scripts are carved from
+`DiagSwdlRepository_Data.MDF` and kept with a CRC status.
 
 Some recovered strings carry single-character corruption from the MDF text
-storage. Treat the descriptions as a useful draft, not a byte-exact copy.
+storage. The exporter sanitizes replacement characters and repairs rare tokens
+that are one bit away from a common correct form. The replacement pairs are in
+the raw dump, so the descriptions remain a useful draft, not a byte-exact copy.
+See `docs/diag-catalog-export.md` for the exact coverage and blockers.
 
 ## Commands
 
@@ -120,10 +124,12 @@ unchanged for the existing commands.
 ## Limits
 
 - `T121_Config` is empty in this snapshot, so the logical-to-CAN map is manual.
-- The catalog does not contain vehicle profiles or script rows yet.
-- The script store is only partly recoverable: many bodies are truncated or
-  damaged in the MDF.
-- Symptom, cause and freeze-frame tables are not exported yet.
+- The script store is only partly recoverable: 89,229 headers were carved, but
+  43,757 streams did not inflate and 36,899 inflated streams did not parse as
+  XML. Damaged bodies are counted, not claimed as complete coverage.
+- Symptom, cause and freeze-frame tables have no page set in this snapshot.
+  `T152`, `T153`, `T154`, `T156`, `T157`, `T158`, `T159`, `T147` and `T148`
+  cannot supply rows; the raw dump records the exact blockers.
 - The script runner has unit coverage but has not been validated on a car in
   this workspace.
 

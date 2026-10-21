@@ -495,6 +495,8 @@ def _catalog_summary(catalog, path: Path) -> dict:
             "timing": len(catalog.timing),
             "profiles": len(catalog.profiles),
             "scripts": len(catalog.scripts),
+            "symptom_definitions": len(catalog.symptom_definitions),
+            "freeze_frames": len(catalog.freeze_frames),
         },
     }
 
@@ -537,6 +539,8 @@ def _print_catalog(catalog, path: Path) -> None:
     print(f"  Timing rows: {len(catalog.timing)}")
     print(f"  Profiles: {len(catalog.profiles)}")
     print(f"  Scripts: {len(catalog.scripts)}")
+    print(f"  Symptom definitions: {len(catalog.symptom_definitions)}")
+    print(f"  Freeze frames: {len(catalog.freeze_frames)}")
 
 
 def _print_catalog_lookup(entry, code: str) -> None:
