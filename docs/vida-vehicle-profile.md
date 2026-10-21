@@ -259,11 +259,11 @@ profile set or adopt a script-shaped plan; either way, the union is data, not a
 hardcoded list.
 
 The timing database is the more immediately useful half. Right now every read
-uses one fixed `--timeout`, and `dice_can` retries nothing. VIDA treats timeout
-and resend as per-ECU-variant data keyed by the first request bytes, which is why
-it can wait longer on a slow module without slowing the rest. Adopting that shape
-means a per-target timeout and resend policy in `ModuleTarget`, seeded from
-observed behaviour rather than from the VIDA table itself.
+uses one fixed `--timeout`. VIDA's shipped table has 41 request overrides with
+3000 ms and no resend, but the `P1max`/`P3min`/`P4min` values vary (40/110/10,
+6/27/2 and 10/110/2). Adopting that shape means a per-target timeout in
+`ModuleTarget`, seeded from observed behaviour; resend is uniformly 0 in this
+sample, so it is not the near-term gap.
 
 ## Open questions
 
@@ -271,14 +271,15 @@ observed behaviour rather than from the VIDA table itself.
    content stack does not; it only filters documents, parts and symptoms.
    `J2534DeviceDriver` is a device descriptor only. But the managed diagnostic
    client resolves the vehicle again and selects a script by the same profile set
-   (`GetScript`). The parser names show `EcuAddress` and `ServiceId` inside that
-   script, so the profile reaches the car indirectly. No script value was read,
-   so the effect on the wire remains unproven.
+   (`GetScript`). Decoded nodes carry `EcuAddress` and `ServiceId`, so the
+   profile reaches the car indirectly. The remaining gap is coverage and the
+   `T121_Config` row values, not the script format.
 2. **What consumes `fkNodeECU`?** A second pass found no shipped consumer:
    `VehicleProfileDAO` selects it into `VehicleProfileVO`, `getNodeECU` has no
    caller, and no managed PE or Java class consumes it. The script is the
-   logical addressing map and CarCom `T121_Config` is the physical map. The
-   `NodeECU` rows were not enumerated, so the table is not proven vestigial.
+   logical addressing map and CarCom `T121_Config` is the physical map.
+   `NodeECU` has columns `Id`, `Cid`, `Description`, `ObjVersion`; its rows were
+   not extracted, so the table is not proven vestigial.
 3. **What are the `FolderLevel` values between 0 and 3?** Only 0 and 3 are
    observed. 1 and 2 are assumed to be intermediate hierarchy nodes; nothing read
    so far confirms it.

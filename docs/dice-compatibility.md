@@ -35,9 +35,10 @@ the two verified only at runtime, and the five still unidentified.
 
 The image's own registry carries both views. The 64-bit `SETEK - DiCE` key names
 `TSDiCE64.dll`, and the `WOW6432Node` mirror names `TSDiCE32.dll`. The 32-bit
-claim above therefore depends on the diagnostic process bitness, which is
-inferred rather than measured. The command-table analysis is unaffected: the
-32-bit and 64-bit tables agree.
+claim above is supported: VIDA's Diagnostics control is IE-hosted 32-bit and
+writes the WOW6432Node `LogFile` with the same `05:53:11` session start as
+`VIDA.log`. A live DLL load was not logged. The command-table analysis is
+unaffected: the 32-bit and 64-bit tables agree.
 
 `DiCE32_x64.dll` is PE32+, image base `0x180000000`, seven sections, and 1206
 functions described by the `.pdata` exception directory. All function extents
@@ -243,9 +244,11 @@ registry, not by import, but it is split across more than one assembly.
 `ConfigApplication`; and `DiagApp.exe` outside the VIDA directory is a second
 client that opens a named device. The shipped snapshot selects nothing:
 `DiagnosticConnection` is `NoCommConnection`, `CommToolName` is empty, and no
-USB device instance exists. So the vendor code path for selection does exist,
-but this snapshot leaves it unconfigured. A second pass records the split in
-`docs/vida-second-pass.md`.
+USB device instance exists. The empty name maps to `CommToolType=NOCOMM`, which
+this build does not implement; connection construction throws
+`VehComException("Unsupported communication tool")` before any J2534 call. So the
+vendor code path for selection does exist, but this snapshot leaves it
+unconfigured. A second pass records the split in `docs/vida-second-pass.md`.
 
 The image's only protocol-timing data is a SQL Express database,
 `VIDA/db/DiceTiming_Data.MDF`, whose lookup key is an ECU variant plus the raw

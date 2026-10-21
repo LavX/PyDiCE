@@ -150,9 +150,9 @@ The DTC list procedure, `vadis_GetAllPossibleDtcsOnEcu`, returns
 `t141.name AS Data` and `SUBSTRING(t150.CompareValue, 3, 6)`. `T147` joins the
 block to an ECU variant, not to a text row. The `T141_Block` rows of type 10
 overwhelmingly carry `fkt190_Text = 0`, so the block text path does not supply
-their label.
+their data.
 
-There are three text paths, and only one is the list label:
+There are three text paths, and only one is the DTC list data:
 
 | Path | Key | Supplies |
 | --- | --- | --- |
@@ -163,7 +163,13 @@ There are three text paths, and only one is the list label:
 For `0x034211`, the value row points at text id 1,004,326, "Camshaft Position
 Sensor A Circuit Low (Bank 1 or single sensor)". The long sentence text id
 1,034,063 is a real `T191` row, but no CarCom table referenced it in a raw
-4-byte scan.
+4-byte scan. The `0x034211` block is type 32, not type 10, so it is not a D2
+possible-DTC row; the T150/T191 description is the generic OBD path.
+
+`DtcVO.Text` is populated from `T141_Block.name` by
+`CarComRepository.GetAllPossibleDtcsOnD2Ecu`, and from the script's `Dtc.Text`
+by `ScriptOutputConverter.GetDtcList`. The UI reads `Workflow.Dtc.Text`, not
+`DtcVO.Text`; on the GGD path that text is the `T150_BlockValue` value text.
 
 ## What is attached as context
 
@@ -295,6 +301,8 @@ available evidence goes against the earlier wording.
 | DTC description sentences exist in `CarComRT_Data.MDF` | observed | 122 UTF-16 string lines of the `Diagnostic trouble code (DTC) ...` form |
 | The DTC list procedure returns `T141_Block.name` as `Data` | observed | `vadis_GetAllPossibleDtcsOnEcu` selects `t141.name AS Data`; DTC blocks carry `fkt190_Text = 0` |
 | The standard OBD description joins through `T150_BlockValue` to `T191_TextData` | observed | `0x034211` -> text id 1,004,326 |
+| `DtcVO.Text` is set from `T141_Block.name` on the possible-DTC path | observed | `CarComRepository.GetAllPossibleDtcsOnD2Ecu` stores reader ordinal 2 |
+| The UI reads `Workflow.Dtc.Text`, not `DtcVO.Text` | observed | `UI.DLL` table controls use `Dtc.Text`; no direct `DtcVO.Text` access |
 | Status words are computed and translated, not read from the ECU | inferred | `Dtc` calculation methods plus `lblSB`/`lblSI` resource keys |
 | Service ids `AE1B`, `AE11`, `AE02`, `AE18` map to specific Volvo services | inferred | they appear only in compiled test method names and format literals |
 | `T147_BlockMetaDTC` carries the DTC-to-text mapping | contradicted | it carries `fkT141_Block` and `fkT100_EcuVariant`; no code, text or language column was observed |
@@ -334,14 +342,15 @@ platform can key descriptions by code directly.
 ## Open questions
 
 1. **What is the row-level join?** `T147_BlockMetaDTC` is not the text join; it
-   carries `fkT141_Block` and `fkT100_EcuVariant`. The DTC value text joins
-   through `T150_BlockValue.fkt190_text_value`. Remaining: a possible third
-   `T147` column, the exact T150 block-id offset, and who references the long
-   article text id.
-2. **Which row is the short name?** The DTC list uses `T141_Block.name`; the
-   standard OBD description is the `T150_BlockValue` value text. The UI binding
-   to `DtcVO.Text` was not decompiled, so which field the fault list prints is
-   still open.
+   carries `fkT141_Block` and `fkT100_EcuVariant`, and no third column is visible
+   to any shipped query. The DTC value text joins through
+   `T150_BlockValue.fkt190_text_value`. Remaining: the exact T150 block-id
+   offset and the article phrase URN that reaches text id 1,034,063.
+2. **Which row is the short name?** The DTC list procedure returns
+   `T141_Block.name` as `Data`; `DtcVO.Text` is set from it on the
+   possible-DTC path. The UI reads `Workflow.Dtc.Text`, not `DtcVO.Text`; on the
+   GGD path that text is the `T150_BlockValue` value text. The D2 script's
+   `Dtc.Text` source remains open.
 3. **How is the code string built?** `T150_BlockValue.CompareValue` is text
    (`0x034211`), and the same row carries `P034211`. Whether VIDA formats the
    letter prefix in IL or reads it from a text row was not determined.

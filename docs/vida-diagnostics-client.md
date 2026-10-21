@@ -52,9 +52,10 @@ carried as configuration data. No managed code branches on it: the `_vehType`
 field is read only by its getter, `GetScript` does not take it, and no lowercase
 `p2x` literal exists in the 243 managed PEs. It is not a P2/P3 switch. The
 shipped configuration also sets `DiagnosticConnection` to `NoCommConnection`
-with an empty `CommToolName`, so no device is bound in this snapshot. That is a
-statement about the snapshot, not about what the UI can do; the boundary note
-records the selection path.
+with an empty `CommToolName`. The empty name maps to `CommToolType=NOCOMM`,
+which throws `VehComException("Unsupported communication tool")` at connection
+construction, before any J2534 call. That is a statement about the snapshot, not
+about what the UI can do; the boundary note records the selection path.
 
 `components.config.xml` wires the client through a component factory. The
 `ScriptProvider` component receives both settings:
@@ -267,10 +268,13 @@ read; what remains is coverage, not format.
 ## Timing
 
 `db/DiceTiming_Data.MDF` supplies `P1max`, `P3min`, `P4min`, `Timeout` and
-`Resend` keyed by `ECU_variant` plus request bytes `B1`, `B2`, `B3`. That is
-covered in `docs/vida-vehicle-profile.md`; it is a separate axis from the script.
-`EcuNameFromVariantId` is a display-side helper, not part of the runtime timing
-path.
+`Resend` keyed by `ECU_variant` plus request bytes `B1`, `B2`, `B3`. The shipped
+table has 41 `Requests` rows, 3 `MessageTiming` rows and 1 `TimeoutAndResend`
+row. Every override points at 3000 ms and resend 0; the variation is in
+`P1max`/`P3min`/`P4min` (id 0: 40/110/10, id 1: 6/27/2, id 2: 10/110/2).
+That is covered in `docs/vida-vehicle-profile.md`; it is a separate axis from the
+script. `EcuNameFromVariantId` is a display-side helper, not part of the runtime
+timing path.
 
 ## What this means for PyDiCE
 
@@ -308,12 +312,12 @@ remaining work is coverage, not format.
    that has not been located. It is display-side; it is not in the timing path.
 5. **Where do the timing values come from at runtime?** The `@ECU` chain is
    traced from CarCom `EcuConfig.EcuVariantId` through `DiagnosticSetting` and
-   `DiceTimingLookup` to `DatabaseSession`. The concrete timing values were not
-   extracted from the MDF.
-6. **Does the client actually connect to DiCE in this tree?** The shipped
-   configuration is `NoCommConnection` with an empty tool name, so no device is
-   bound. The UI selection path and `DiagApp.exe` exist, but the live path was
-   not exercised here.
+   `DiceTimingLookup` to `DatabaseSession`. The table values are extracted; how
+   an `EcuVariantId` maps to a specific vehicle or ECU name remains open.
+6. **Does the client actually connect to DiCE in this tree?** The empty
+   `CommToolName` maps to `NOCOMM`, which throws at connection construction, so
+   no live connection is possible from this snapshot without changing the tool
+   selection. The UI selection path and `DiagApp.exe` exist.
 
 ## Reproducing
 

@@ -131,9 +131,10 @@ The only SQL references are:
 - `GetCompatibleProfilesWithLevel` filters `t1.fkNodeEcu is null`, but no shipped
   caller was found.
 
-That is a bounded negative, not proof that the table is vestigial: the
-`NodeECU` rows and columns were not enumerated. It does rule out `fkNodeECU` as
-the per-profile ECU list the first notes were looking for.
+That is a bounded negative, not proof that the table is vestigial. `NodeECU`
+has columns `Id`, `Cid`, `Description` and `ObjVersion`; its rows were not
+enumerated. It does rule out `fkNodeECU` as the per-profile ECU list the first
+notes were looking for.
 
 ### The script is the logical map, CarCom is the physical map
 
@@ -197,10 +198,9 @@ Both keys are present in `Windows/System32/config/SOFTWARE`:
 bytes as the document's `DiCE32_x64.dll`. `TSDiCE32.dll` is 531456 B, SHA-256
 `4dd4eb3bead080d6f7eedab3c93d587b2990ac7fe7565897a4085d0afb55a930`.
 
-Which key a process reads depends on its bitness. The first notes infer that
-VIDA's diagnostic process is 32-bit, which is consistent with the WOW6432Node
-value pointing at `TSDiCE32.dll`. That bitness was not measured, so the exact
-library VIDA loads remains an inference, not a contradiction.
+Which key a process reads depends on its bitness. The third pass shows VIDA's
+Diagnostics control is hosted by 32-bit Internet Explorer and writes the
+WOW6432Node `LogFile`, so its registry view names `TSDiCE32.dll`. See section 5.
 
 ### Device selection exists, but nothing is bound in this snapshot
 
@@ -221,9 +221,9 @@ not.
 `NoCommConnection` is persisted and the local override path is disabled
 (`UseClientSettings=false`), but it is not the gate for the bus path.
 `DiagnosticVehCommService` builds a transport from `CommToolType`, which comes
-from CarCom `ProtocolInfo.Protocol` values `GGD`/`D2`, not from
-`DiagnosticConnection`. Whether `NOCOMM` is honored on that switch was not
-traced to a branch.
+from the UI selection, not from `DiagnosticConnection`. The empty
+`CommToolName` maps to `NOCOMM`, and `ensureCommToolConnection` handles only
+`J2534` and `VIRTUAL`; `NOCOMM` throws at construction. See section 5.
 
 ### The timing consumer
 
@@ -240,7 +240,8 @@ CarCom EcuConfig.EcuVariantId
 ```
 
 `EcuNameFromVariantId` is display-side. `VehCom2.DLL` does not reference
-`AppServices.EcuDataResolver`, so it is not in the timing path.
+`AppServices.EcuDataResolver`, so it is not in the timing path. The extracted
+rows are in section 5: 41 `Requests`, 3 `MessageTiming`, 1 `TimeoutAndResend`.
 
 ## 4. The DTC list is not a T191 block text
 
@@ -266,8 +267,8 @@ code column, text id column or language column was observed. The catalog has
 `T141_Block` rows of type 10 overwhelmingly carry `fkt190_Text = 0`.
 
 The DTC list procedure therefore returns `T141_Block.name`, the structured fault
-text, as `Data`. The UI binding to `DtcVO.Text` was not decompiled. For block
-`1107137` the name is:
+text, as `Data`. The `DtcVO.Text` and UI `Dtc.Text` binding is in section 5. For
+block `1107137` the name is:
 
 ```
 Ignition system/Misfire, Camshaft pos sensor, Camshaft pos sensor,
@@ -294,7 +295,80 @@ Diagnostic trouble code (DTC) ECM-P034211 is for the camshaft position
 No CarCom table referenced that id in a raw 4-byte scan, so it is probably used
 by the article or info-element side, not by the DTC list.
 
-## 5. Corrections to the first notes
+## 5. Third pass: closed and bounded
+
+### The VIDA host is 32-bit
+
+The Diagnostics control is IE-hosted from `jsp/login/login.jsp`:
+`UI.DLL#Vcc.Vida.DiagSwdl.UI.DotNetPreLoader` in an `<object>` tag.
+`VidaConfigApplication.exe` and `VidaMonitor.exe` are PE32 with
+`32BITREQUIRED`; the JVM is i586 (`jdk/release` has `OS_ARCH="i586"`).
+
+The registry write settles the view. `DotNetPreLoader.Start` calls
+`DiceLogHandler.UpdateRegistryEntry`, which writes `LogFile` under
+`SOFTWARE\PassThruSupport.04.04\SETEK - DiCE`. The WOW6432Node value is
+`C:\VIDA\System\Log\Diagnostics\TSDice32_2022-02-01_05-53-11.log`, and
+`VIDA.log` records the same session start at `05:53:11`. The 64-bit key still
+has the vendor default `C:\Program Files\DiCE\Tools\TSDice32.log`. The 32-bit
+view is therefore the one VIDA uses, and the earlier inference is supported.
+
+### NOCOMM throws at construction
+
+`NoCommConnection` parses to enum 3. `ensureCommToolConnection` handles only
+`J2534` (0) and `VIRTUAL` (2); 1, 3 and 4 throw
+`VehComException("Unsupported communication tool")`. `CommToolType` comes from
+`UI.CommToolSetting.get_SelectedCommToolType`: empty name maps to 3, a name
+starting `DiCE` maps to 1, `Virtual` maps to 2, otherwise 0. The shipped
+`CommToolName` is empty, so transport construction throws before any J2534 call.
+`DiagnosticConnection` is written by the UI and read by the self-test dialog,
+not by the bus path.
+
+### Timing values
+
+The DiceTiming tables are small and fully read:
+
+| Table | Rows | Content |
+| --- | --- | --- |
+| `Requests` | 41 | 11 ECU variants; B1 in {0xAB, 0xAE, 0xB2, 0xB9}; B2 1..245; B3 0 or 0x70 |
+| `MessageTiming` | 3 | id 0: 40/110/10; id 1: 6/27/2; id 2: 10/110/2 |
+| `TimeoutAndResend` | 1 | id 0: 3000 ms, resend 0 |
+
+Every `Requests` row points at `TimeoutAndResendId = 0`, so the shipped policy
+is 3000 ms and no retransmission. The per-variant variation is in
+`P1max`/`P3min`/`P4min`, not in resend.
+
+### DTC text binding
+
+`DtcVO.Text` is populated from `T141_Block.name` by
+`CarComRepository.GetAllPossibleDtcsOnD2Ecu`, and from the script's `Dtc.Text`
+by `ScriptOutputConverter.GetDtcList`. The UI reads `Workflow.Dtc.Text`, not
+`DtcVO.Text`; on the GGD path that text comes from the `T150_BlockValue` value
+text. The `0x034211` block is type 32, not type 10, so it is not a D2
+possible-DTC row; the T150/T191 description is the generic OBD path.
+
+### T147 and the article text
+
+`T147_BlockMetaDTC` exposes only `fkT141_Block` and `fkT100_EcuVariant` to every
+shipped query, assembly, Java class, JSP and script. No third column is visible.
+Text id 1,034,063 is referenced only from T190/T191/T192 text-store pages; no
+DTC, block, script or application table points at it. The article is reached by
+phrase URN, not by that id.
+
+### NodeECU and T121 schema
+
+`NodeECU` columns are `Id`, `Cid`, `Description`, `ObjVersion`; the clustered
+index and FK names are as before. `T121_Config` has `id`, `fkT123_Bus`,
+`fkT122_Protocol`, `fkT130_Init_Diag`, `fkT130_Init_Timing`, `physicalAddress`,
+`functionalAddress`, `canAddress`, `commAddress`, `priority`, `canIdTX`,
+`canIdRX`, `canIdFunc`, `canIdUUDT`, `busRate`, `addressSize` and
+`fkT121_Config_Gateway`.
+
+Rows for both tables were not reachable by page parsing. The page headers do not
+carry the catalog object ids, and the `sys.sysrowsets` indirection was not
+decoded. `NodeECU` row count and the `commAddress` to CAN-ID mapping therefore
+remain open, but the schema is exact.
+
+## 6. Corrections to the first notes
 
 | First note | Correction |
 | --- | --- |
@@ -305,28 +379,35 @@ by the article or info-element side, not by the DTC list.
 | `native-dice.md` repeats the `fkNodeECU` lead and the `VehType` switch | Same corrections |
 | `vida-dtc-readout.md` treats `T147_BlockMetaDTC` as the missing DTC-to-text join | `T147` scopes blocks to ECU variants; the DTC list procedure returns `T141_Block.name` as `Data`, and `T150` carries the OBD value text |
 | `dice-compatibility.md` says `VehCom2` is the single wrapper and no component selects a device | Registry resolution is in `Util.DLL`, load is in `VehCom2`, selection is in `UI.DLL` and `DiagApp.exe`; the shipped snapshot binds nothing |
-| `dice-compatibility.md` says `TSDiCE32.dll` is the build VIDA loads | The image has both views; the WOW6432Node view names `TSDiCE32.dll`, the 64-bit view names `TSDiCE64.dll`. Process bitness decides, and was not measured |
+| `dice-compatibility.md` says `TSDiCE32.dll` is the build VIDA loads | The image has both views. VIDA's Diagnostics host is 32-bit and writes the WOW6432Node `LogFile`, so it reads `TSDiCE32.dll`; a live DLL load was not logged |
+| `vida-image-boundary.md` said the `NOCOMM` branch was not traced | The branch is decompiled: `NOCOMM` throws `VehComException("Unsupported communication tool")` at construction |
+| `vida-diagnostics-client.md` left the timing values unread | 41 `Requests` rows, 3 `MessageTiming` rows, 1 `TimeoutAndResend` row: 3000 ms and no resend |
+| `vida-dtc-readout.md` left the `DtcVO.Text` binding open | `DtcVO.Text` is set from `T141_Block.name` on the possible-DTC path and from script `Dtc.Text` on the read path; the UI reads `Workflow.Dtc.Text` |
+| `vida-vehicle-profile.md` left the `NodeECU` rows open | Columns are `Id`, `Cid`, `Description`, `ObjVersion`; rows are still not readable by page parsing |
 
-## 6. Remaining open questions
+## 7. Remaining open questions
 
-1. **Which registry view does VIDA read?** The 32-bit inference is consistent
-   with the WOW6432Node key, but the diagnostic process bitness was not
-   measured. A read of the running client or its PE headers would settle it.
-2. **What does `NOCOMM` do on the transport switch?** `CommToolType` is built
-   from CarCom protocol values, not from `DiagnosticConnection`. The four
-   branches of `ensureCommToolConnection` were not decompiled.
-3. **How much script coverage is there?** Two concrete scripts were decoded.
+1. **How much script coverage is there?** Two concrete scripts were decoded.
    The full script set, and the bodies that fail CRC, remain unread.
-4. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config`
-   supplies it, but the mapping was not dumped per platform.
-5. **What are the `NodeECU` rows?** The code consumer is absent, but the rows
-   were not enumerated. A read-only MDF attach would close it.
-6. **Does `T147` have a third column?** Only the two columns used by the SQL
-   corpus were observed. A schema dump would settle it.
-7. **Who references the long article text id?** No CarCom table did in the raw
-   scan. The article or info-element side is the likely referrer.
-8. **Which field does the fault list bind to `DtcVO.Text`?** The proc returns
-   `t141.name`, but the UI assignment was not decompiled.
+2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config`
+   supplies the columns, but its rows were not reachable by page parsing. A
+   read-only SQL Server attach on a copy would close it.
+3. **What are the `NodeECU` rows?** The columns are known and the code consumer
+   is absent, but the rows were not enumerated.
+4. **Does `T147` have a physical third column?** Only the two keys are visible
+   to every shipped query. A catalog dump would settle the physical schema.
+5. **How does the article phrase map to text id 1,034,063?** The id appears only
+   in T190/T191/T192, not in DTC or block tables. The IE phrase URN is the likely
+   key, but the URN-to-id table was not located.
+6. **What produces the D2 script's `Dtc.Text`?** `DtcOutput.AddDtc` has no
+   direct caller in `BizServices.Scripting.DLL`; the script engine likely calls
+   it. A type 10 read script would settle the source.
+7. **How does `EcuVariantId` map to a vehicle or ECU name?** The timing table
+   uses the integer; `EcuNameFromVariantId` is display-side and its backing data
+   was not located.
+8. **How are the timing values applied per session?** `P2CanServerMax` and the
+   session-parameter adjustment are visible in strings, but the exact runtime
+   arithmetic was not traced.
 
 ## Reproducing
 
@@ -347,6 +428,17 @@ strings -a "$D/Util.DLL" | grep -E "ZipInputStream|GZipInputStream|RegReader"
 # PassThruSupport.04.04\SETEK - DiCE
 # WOW6432Node\PassThruSupport.04.04\SETEK - DiCE
 
+# 32-bit host and registry view
+file "$VIDA/VidaConfigApplication.exe" "$VIDA/jdk/bin/java.exe"
+grep -n "Starting new logsession" "$VIDA/System/Log/Diagnostics/VIDA.log" | tail
+strings -a "$D/VehCom2.DLL" | grep "Unsupported communication tool"
+
+# timing rows: Requests, MessageTiming, TimeoutAndResend
+T="$VIDA/db/DiceTiming_Data.MDF"
+dd if="$T" bs=1 skip=655456 count=64 | xxd -g1
+dd if="$T" bs=1 skip=647264 count=32 | xxd -g1
+dd if="$T" bs=1 skip=712800 count=32 | xxd -g1
+
 # DTC procedure
 MDF="$VIDA/db/CarComRT_Data.MDF"
 LC_ALL=C grep -abo "vadis_GetAllPossibleDtcsOnEcu" "$MDF"
@@ -360,6 +452,10 @@ inspect_managed_members(path="$D/BizServices.ScriptRepository.DLL")
 inspect_managed_members(path="$D/Util.DLL")
 inspect_managed_members(path="$D/UI.DLL")
 inspect_managed_members(path="$D/VehCom2.DLL")
+inspect_managed_members(path="$D/Core.DLL")
+inspect_managed_members(path="$D/BizServices.VehicleCommProvider.DLL")
+inspect_managed_members(path="$D/AppServices.VehicleAccess.DLL")
+inspect_managed_members(path="$D/BizServices.CarCom.DB.DLL")
 ```
 
 ## Caveats
@@ -369,7 +465,18 @@ single-character corruption (`RELECT`, `BREATE`, `T141_Bloci`); every schema
 claim above was cross-checked against compiled SQL literals in the assemblies.
 
 The registry hive reports equal sequence numbers, but `SOFTWARE.LOG1`/`LOG2`
-were not replayed, so a mid-write capture is not fully excluded.
+were not replayed, so a mid-write capture is not fully excluded. The 32-bit view
+is observed from the `LogFile` write and the matching `VIDA.log` timestamp; no
+live `LoadLibrary("TSDiCE32.dll")` was logged.
+
+The DiceTiming pages have a stale first slot entry pointing into the padded
+comment of the first record. The rows were read from the free-space pointer and
+the contiguous record chain; the values match the row comments.
+
+`NodeECU` and `T121_Config` rows were not reachable by page parsing: the page
+headers do not carry the catalog object ids, and the `sys.sysrowsets` indirection
+was not decoded. Their schemas come from `sys.syscolpars`; the row counts remain
+unknown.
 
 Some script bodies fail their CRC and were not used. The decoded values are
 examples, not a complete census.

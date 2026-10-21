@@ -61,4 +61,4 @@ The diagnostic client selects a ZIP XML script by that same profile set. Decoded
 
 The full recovery, including the cascade SQL and the stored procedures, is in `docs/vida-vehicle-profile.md`.
 
-Separately, VIDA keys request timeout and resend policy to an ECU variant plus the first one to three request bytes, not to the vehicle profile. `volvo_p3` currently applies one fixed `--timeout` and never resends, so that is the nearer-term gap: per-target timeout and resend policy on `ModuleTarget`, seeded from observed behaviour rather than copied from VIDA's table.
+Separately, VIDA keys request timing to an ECU variant plus the first one to three request bytes, not to the vehicle profile. Its shipped table has 41 request overrides, all at 3000 ms and resend 0; the variation is in `P1max`/`P3min`/`P4min`. `volvo_p3` applies one fixed `--timeout`, so per-target timeout is the nearer-term gap; resend is uniformly 0 in this sample.

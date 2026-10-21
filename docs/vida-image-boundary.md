@@ -106,9 +106,12 @@ The image carries two registry views:
 | `PassThruSupport.04.04\SETEK - DiCE` | `TSDiCE64.dll` | `DiagApp.exe` |
 | `WOW6432Node\PassThruSupport.04.04\SETEK - DiCE` | `TSDiCE32.dll` | `DiagApp.exe` |
 
-`Name` is absent in both. Which view a process reads depends on its bitness. The
-32-bit inference in `dice-compatibility.md` is consistent with the WOW6432Node
-value, but the process bitness was not measured.
+`Name` is absent in both. VIDA's Diagnostics control is IE-hosted and 32-bit;
+`VidaConfigApplication.exe` and `VidaMonitor.exe` carry `32BITREQUIRED`, and the
+JVM is i586. The `LogFile` write confirms the view: the WOW6432Node value is
+`...TSDice32_2022-02-01_05-53-11.log`, the 64-bit value is the vendor default,
+and `VIDA.log` records the same `05:53:11` session start. VIDA therefore reads
+the WOW6432Node key and names `TSDiCE32.dll`.
 
 `DiagApp.exe` outside the VIDA directory is itself a J2534 client: it reads the
 same key, calls `PassThruOpen` with the selected device, and logs
@@ -116,10 +119,13 @@ same key, calls `PassThruOpen` with the selected device, and logs
 the managed Diagnostics layer, not the only loader in the image.
 
 `diagnostic.config.xml` ships `DiagnosticConnection` as `NoCommConnection` and
-leaves `CommToolName` empty. `NoCommConnection` is persisted and the local
-override path is disabled, but the bus path builds its transport from
-`CommToolType` (CarCom `ProtocolInfo.Protocol` values `GGD`/`D2`), not from that
-setting. The shipped snapshot binds no device; the UI can still select one.
+leaves `CommToolName` empty. The empty name maps to `CommToolType=NOCOMM`, and
+`ensureCommToolConnection` handles only `J2534` and `VIRTUAL`; `NOCOMM` throws
+`VehComException("Unsupported communication tool")` at construction, before any
+J2534 call. `DiagnosticConnection` itself is UI and self-test state, not the bus
+gate. The shipped snapshot therefore prevents a live connection through the
+empty tool name, not through the `NoCommConnection` string. The UI can still
+select a tool.
 
 `VehCom2.DLL` is also where the timing database is consumed. Its strings include
 `EXECUTE GetRequestTimeoutAndResend @ECU={0}` and the protocol-specific timing
@@ -136,7 +142,7 @@ VIDA diagnostic session
     -> UI comm-tool selection (optional)
     -> Util.RegistryScanner (FunctionLibrary)
     -> VehCom2.J2534ChannelManager / J2534Proxy.LoadDll
-    -> J2534 DLL (TSDiCE32 or TSDiCE64, by registry view)
+    -> J2534 DLL (TSDiCE32 for VIDA's 32-bit host; TSDiCE64 for 64-bit clients)
     -> DiceUsb.sys
     -> DiCE adapter
 ```
@@ -179,7 +185,9 @@ The VIDA work now separates three things that were easy to conflate.
   `P3min`, `P4min`, `Timeout` and `Resend` by ECU variant plus request bytes.
   `VehCom2.DLL` executes `GetRequestTimeoutAndResend @ECU={0}` and applies the
   result per protocol: `P1max`/`P3min`/`P4min` over ISO 9141 and `P2Can`/`P4Can`
-  over CAN. This is a separate axis from the profile and the script.
+  over CAN. The table has 41 `Requests` overrides, 3 `MessageTiming` rows and 1
+  `TimeoutAndResend` row; every override uses 3000 ms and no resend. This is a
+  separate axis from the profile and the script.
   `AppServices.EcuDataResolver.DLL` exposes `EcuNameFromVariantId` for display
   use, but `VehCom2.DLL` does not reference that assembly, so it is not part of
   the runtime timing path.
@@ -220,38 +228,42 @@ means the available evidence goes against the earlier wording.
 | Statement | Status | Basis |
 | --- | --- | --- |
 | The image carries 32-bit `TSDiCE32.dll` and 64-bit `TSDiCE64.dll` with the documented hashes | observed | `sha256sum`, `file` |
+| VIDA's Diagnostics host is 32-bit and writes the WOW6432Node `LogFile` | observed | IE-hosted control, `32BITREQUIRED`, `VIDA.log` timestamp |
 | `VehCom2.DLL` contains the J2534 loader and timing identifiers | observed | managed metadata and user strings |
 | The shipped configuration uses `NoCommConnection` with an empty tool name | observed | `diagnostic.config.xml` |
 | `VehCom2.DLL` is the only J2534 loader in Diagnostics | observed | only `VehCom2` has `LoadLibrary`; `DiagApp.exe` outside VIDA also loads it |
 | The `FunctionLibrary` value is resolved by `Util.DLL` | observed | `RegReader.FillDeviceInformation` reads `Vendor`, `FunctionLibrary`, `ConfigApplication` |
 | No component can select a J2534 device | contradicted | `UI.CommToolSetting.PopulateCommTools`; the shipped snapshot binds none |
-| `NoCommConnection` is the bus-path gate | contradicted | `CommToolType` comes from CarCom `ProtocolInfo` `GGD`/`D2`; the branch was not traced |
+| `NoCommConnection` is the bus-path gate | contradicted | empty `CommToolName` maps to `NOCOMM`, which throws at construction; the string is UI state |
 | The image has 64-bit and WOW6432Node registry views with different `FunctionLibrary` values | observed | `SOFTWARE` hive |
+| `DiceTiming` has 41 `Requests`, 3 `MessageTiming` and 1 `TimeoutAndResend` row; default 3000 ms, no resend | observed | page-level extraction |
+| The `T121_Config` row values are known | unverified | columns are catalogued; page headers did not carry the object id |
 | Scripts are ZIP XML and `EcuAddress` is a node address | observed | ZIP header, `ZipInputStream`, `T121_Config.commAddress` |
 | `fkNodeECU` is a per-profile ECU list | contradicted | no shipped consumer; the script is the logical map and `T121_Config` the physical map |
+| The `NodeECU` row values are known | unverified | columns are catalogued; page headers did not carry the object id |
 | The DTC list procedure returns `T141_Block.name` as `Data`; `T147` is not the text join | observed | `vadis_GetAllPossibleDtcsOnEcu` |
 | The VIDA image holds no adapter command table | documented | targeted searches; absence is bounded by that coverage |
 
 ## Open questions
 
-1. **Which registry view does VIDA read?** The 32-bit inference is consistent
-   with the WOW6432Node key, but the diagnostic process bitness was not
-   measured. The running client or its PE headers would settle it.
-2. **What does `NOCOMM` do on the transport switch?** `CommToolType` is built
-   from CarCom protocol values, not from `DiagnosticConnection`. The four
-   branches of `ensureCommToolConnection` were not decompiled.
-3. **How complete is the script coverage?** Two concrete scripts were decoded.
+1. **How complete is the script coverage?** Two concrete scripts were decoded.
    The full set, and the bodies that fail CRC, remain unread.
-4. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config`
-   supplies it, but the mapping was not dumped per platform.
-5. **What are the `NodeECU` rows?** The code consumer is absent, but the rows
-   were not enumerated. A read-only MDF attach would close it.
-6. **Can the command-space negative result be made complete?** The image is
+2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
+   the columns, but its rows were not reachable by page parsing. A read-only SQL
+   Server attach on a copy would close it.
+3. **What are the `NodeECU` rows?** The code consumer is absent and the columns
+   are known, but the rows were not enumerated.
+4. **Does `T147` have a physical third column?** Only the two keys are visible
+   to every shipped query. A catalog dump would settle the physical schema.
+5. **How does the article phrase map to text id 1,034,063?** The id appears only
+   in T190/T191/T192, not in DTC or block tables. The phrase URN is the likely
+   key.
+6. **How does `EcuVariantId` map to a vehicle or ECU name?** The timing table
+   uses the integer; `EcuNameFromVariantId` is display-side and its backing data
+   was not located.
+7. **Can the command-space negative result be made complete?** The image is
    large and the current evidence is a set of targeted searches.
-7. **What does `Vida.exe` do?** It was identified and hashed, not analysed.
-
-The DTC and UI questions, including the `T147` third column and the
-`DtcVO.Text` binding, are listed in `docs/vida-second-pass.md`.
+8. **What does `Vida.exe` do?** It was identified and hashed, not analysed.
 
 ## Reproducing
 
@@ -264,9 +276,11 @@ sha256sum "$VIDA/Vida.exe" "$D/VehCom2.DLL" \
   "$IMG/Program Files (x86)/DiCE/Tools/TSDiCE32.dll" \
   "$IMG/Program Files/DiCE/Tools/TSDiCE64.dll" \
   "$IMG/Program Files/DiCE/Tools/DiagApp.exe"
-file "$VIDA/Vida.exe" "$IMG/Program Files/DiCE/Tools/DiagApp.exe" \
+file "$VIDA/Vida.exe" "$VIDA/VidaConfigApplication.exe" \
+  "$VIDA/jdk/bin/java.exe" "$IMG/Program Files/DiCE/Tools/DiagApp.exe" \
   "$IMG/Program Files/DiCE/Tools/TSDiCE64.dll" \
   "$IMG/Program Files (x86)/DiCE/Tools/TSDiCE32.dll"
+grep -n "Starting new logsession" "$VIDA/System/Log/Diagnostics/VIDA.log" | tail
 stat -c '%n %s' "$VIDA/Vida.exe" "$VIDA/VidaConfigApplication.exe.Config" \
   "$D/VehCom2.DLL" "$IMG/Program Files (x86)/DiCE/Tools/TSDiCE32.dll" \
   "$IMG/Program Files/DiCE/Tools/TSDiCE64.dll" \
@@ -283,6 +297,7 @@ strings -a -el "$D/VehCom2.DLL" \
 # Read the SOFTWARE hive read-only. Both keys carry the same value names:
 # PassThruSupport.04.04\SETEK - DiCE
 # WOW6432Node\PassThruSupport.04.04\SETEK - DiCE
+# The WOW6432Node LogFile timestamp should match the last VIDA.log session start.
 ```
 
 Managed assembly inspection:
