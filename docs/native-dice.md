@@ -57,6 +57,8 @@ Two points matter for this transport. First, on the Java side those profile IDs 
 
 Until that question closes, `module_scan` target selection stays explicit: `P3_D6_MODULES`, a discovery sweep, or a JSON profile. The transferable idea is the shape, not the tables: nullable components with wildcard matching and an always-valid generic profile, resolving to a set of module profiles that get scanned as a union.
 
+The diagnostic client turns out to select a compressed XML script by that same profile set, not a list of module IDs, and it carries its own platform switch (`VehType`, `p2x` in the shipped config). So a vehicle-to-module mapping is something this repository would be introducing, not copying from VIDA. The client is written up in `docs/vida-diagnostics-client.md`.
+
 The full recovery, including the cascade SQL and the stored procedures, is in `docs/vida-vehicle-profile.md`.
 
 Separately, VIDA keys request timeout and resend policy to an ECU variant plus the first one to three request bytes, not to the vehicle profile. `volvo_p3` currently applies one fixed `--timeout` and never resends, so that is the nearer-term gap: per-target timeout and resend policy on `ModuleTarget`, seeded from observed behaviour rather than copied from VIDA's table.

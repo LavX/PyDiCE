@@ -156,7 +156,26 @@ The profile ID set is a join key for content, not for bus traffic:
 | CSC symptom search | symptom and condition lookups |
 
 So two vehicle types produce different documents, different parts, and different
-titles. They do not, in this stack, produce a different ECU list.
+titles in the web application. The web application itself produces no ECU list.
+The diagnostic client does select per-profile work, but through a script rather
+than an ECU table, as the next section describes.
+
+## The profile also selects the diagnostic script
+
+The same profile-ID set is the lookup key for the diagnostic client's scripts.
+`DiagSwdlRepository.GetScript` joins `scriptprofilemap` to
+`GetValidProfilesForSelected(@profileList)`, filters by script type and optionally
+by ECU function group, and returns `ScriptContent.XmlDataCompressed` ordered by
+`p.folderlevel desc`.
+
+That ordering matters: a leaf profile wins over the generic `FolderLevel = 0`
+entry, so the generic profile is a fallback here too. Filtering by
+`ScriptCarFunction.FunctionGroup` is the closest thing found to a per-module read
+plan, because one vehicle can have different scripts per ECU.
+
+This is the one place where vehicle type reaches the car, and it does so through a
+compressed XML script rather than through a per-vehicle ECU address table. The
+client side is documented in `docs/vida-diagnostics-client.md`.
 
 ## Protocol timing is a separate axis
 
@@ -237,10 +256,12 @@ observed behaviour rather than from the VIDA table itself.
 
 ## Open questions
 
-1. **Does profile selection change bus-level readout?** Nothing in the Java stack
-   does. `J2534DeviceDriver` is a device descriptor only: id, name, vendor,
-   config application. The client that actually drives DiCE is outside these
-   artifacts, so this is open, not answered.
+1. **Does profile selection change bus-level readout?** Partly answered. The Java
+   content stack does not; it only filters documents, parts and symptoms.
+   `J2534DeviceDriver` is a device descriptor only. But the managed diagnostic
+   client resolves the vehicle again and selects a script by the same profile set
+   (`GetScript`), so the profile does reach the car indirectly. What the script
+   contains is still unopened, so the effect on the wire remains unproven.
 2. **What consumes `fkNodeECU`?** `VehicleProfileDAO` selects it into
    `VehicleProfileVO`, but `getNodeECU` has no caller in `VidaEjb`, `VidaData`,
    or the 279 `VidaWeb` classes. Either the Windows client reads it, or it is
