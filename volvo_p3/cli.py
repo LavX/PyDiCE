@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import io
 import json
+import math
 import re
 import sys
 import time
@@ -35,6 +36,17 @@ from .vida_catalog import (
     CatalogError,
     load_catalog,
     normalize_dtc_code,
+)
+from .vida_runner import (
+    STATUS_ERROR,
+    STATUS_PLANNED,
+    STATUS_RESPONSE,
+    AddressMapError,
+    RunPlan,
+    RunResult,
+    build_run_plan,
+    parse_address_map,
+    run_plan,
 )
 from .vida_script import (
     VidaScriptError,
@@ -927,16 +939,248 @@ def _print_script(script, path: Path) -> None:
     print("Execution: none. This command only parses the script.")
 
 
-def cmd_vida_script(args: argparse.Namespace) -> int:
-    path = Path(args.script)
+def _load_vida_script(path: Path):
     data = _read_file(path, "script")
     try:
         if zipfile.is_zipfile(io.BytesIO(data)):
-            script = parse_script_zip(data)
-        else:
-            script = parse_script_xml(_decode_script_text(data, path))
+            return parse_script_zip(data)
+        return parse_script_xml(_decode_script_text(data, path))
     except VidaScriptError as exc:
         raise ValueError(f"cannot parse script {path}: {exc}") from exc
+
+
+def _load_address_map(path: Path):
+    document = _load_json_object(path, "address map")
+    try:
+        return parse_address_map(document)
+    except AddressMapError as exc:
+        raise ValueError(f"invalid address map {path}: {exc}") from exc
+
+
+def _record_target(record) -> str:
+    return "unmapped" if record.can_id is None else "0x{:03X}".format(record.can_id)
+
+
+def _record_line(record) -> str:
+    return "[{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+        record.index,
+        record.source_ecu,
+        _record_target(record),
+        record.service_id,
+        record.service_name,
+        record.request_hex or "(none)",
+        record.status,
+    )
+
+
+def _print_unmapped(plan) -> None:
+    if not plan.unmapped:
+        return
+    print(f"Unmapped logical addresses ({len(plan.unmapped)}):")
+    for item in plan.unmapped:
+        if item.value is None:
+            value = "unknown"
+        elif item.kind == "ecu_address":
+            value = "0x{:X}".format(item.value)
+        else:
+            value = str(item.value)
+        print(f"  {item.kind} {value} ({item.source_ecu}): no address map entry")
+
+
+def _print_blocked(blocked) -> None:
+    if not blocked:
+        return
+    print(
+        "Blocked services ({}): {}".format(
+            len(blocked),
+            ", ".join(
+                "{} {}".format(item["service_id_hex"], item["classification"])
+                for item in blocked
+            ),
+        )
+    )
+
+
+def _print_run_plan(
+    plan, script_path: Path, map_path: Path, address_map, blocked
+) -> None:
+    print(f"Script: {script_path}")
+    print(f"Docno: {plan.docno or '-'}")
+    print(f"Title: {plan.title or '-'}")
+    print(f"Type: {plan.script_type or '-'}")
+    print(f"Address map: {map_path} ({len(address_map)} entries)")
+    print(f"Read-only requests ({len(plan.records)}):")
+    for record in plan.records:
+        line = "  " + _record_line(record)
+        if record.detail:
+            line += f"  ({record.detail})"
+        print(line)
+    _print_unmapped(plan)
+    _print_blocked(blocked)
+    print("Mode: plan only. No CAN frames were sent.")
+
+
+def _print_run_result(result: RunResult) -> None:
+    counts = result.counts
+    print(
+        "Run: transmitted={} responses={} timeouts={} errors={} skipped={}".format(
+            counts["transmitted"],
+            counts[STATUS_RESPONSE],
+            counts["timeout"],
+            counts[STATUS_ERROR],
+            counts["skipped_unmapped"]
+            + counts["skipped_non_read"]
+            + counts["skipped_unsupported"],
+        )
+    )
+    if result.aborted:
+        print(f"Aborted: {result.abort_reason}")
+    for record in result.records:
+        line = "  " + _record_line(record)
+        if record.detail and record.status != STATUS_RESPONSE:
+            line += f"  ({record.detail})"
+        print(line)
+        if record.status != STATUS_RESPONSE:
+            continue
+        response_id = (
+            "-"
+            if record.response_id is None
+            else "0x{:03X}".format(record.response_id)
+        )
+        print(
+            "      response_id={} payload={}".format(
+                response_id, record.response_payload_hex or "(empty)"
+            )
+        )
+        decoded = record.decoded or {}
+        if decoded.get("kind") == "dtc_list" and decoded.get("status") == "ok":
+            for dtc in decoded["dtcs"]:
+                print(
+                    "      {}-{:02X} status=0x{:02X}".format(
+                        dtc["code"], dtc["failure_type"], dtc["status_byte"]
+                    )
+                )
+        elif decoded.get("kind") == "negative_response":
+            print(
+                "      negative response nrc={}{}".format(
+                    decoded.get("nrc_hex") or "-",
+                    " " + decoded["nrc_name"]
+                    if decoded.get("nrc_name")
+                    else "",
+                )
+            )
+
+
+def _run_script_payload(
+    script, script_path: Path, map_path: Path, address_map, plan, result, blocked
+) -> dict:
+    return {
+        "script": {
+            "path": str(script_path),
+            "docno": script.docno,
+            "title": script.title,
+            "type": script.script_type,
+        },
+        "address_map": {
+            "path": str(map_path),
+            "entries": address_map.to_dict()["entries"],
+        },
+        "executed": result is not None,
+        "dry_run": result is None or result.dry_run,
+        "plan": plan.to_dict(),
+        "result": None if result is None else result.to_dict(),
+        "blocked_services": blocked,
+    }
+
+
+def _native_request_ids(plan: RunPlan) -> list:
+    planned = [
+        record for record in plan.records if record.status == STATUS_PLANNED
+    ]
+    if not planned:
+        raise ValueError(
+            "nothing to execute: no read request has an address map entry"
+        )
+    request_ids = sorted(
+        {record.can_id for record in planned if record.can_id is not None}
+    )
+    unsupported = [
+        can_id for can_id in request_ids if not 0x700 <= can_id <= 0x7F7
+    ]
+    if unsupported:
+        raise ValueError(
+            "the native DiCE transport only accepts diagnostic request IDs "
+            "0x700..0x7F7; address map has "
+            + ", ".join("0x{:03X}".format(can_id) for can_id in unsupported)
+        )
+    return request_ids
+
+
+def _execute_run_plan(plan: RunPlan, timeout: float) -> RunResult:
+    request_ids = _native_request_ids(plan)
+    from .dice_can import DiceCanTransport
+    from .dice_rpc import DiceRpc
+
+    try:
+        with DiceRpc() as rpc:
+            with DiceCanTransport(rpc, uds_requests=request_ids) as bus:
+                return run_plan(plan, bus, timeout=timeout)
+    except (RuntimeError, OSError) as exc:
+        raise ValueError(f"DiCE run failed: {exc}") from exc
+
+
+def cmd_vida_run_script(args: argparse.Namespace) -> int:
+    script_path = Path(args.script)
+    script = _load_vida_script(script_path)
+    map_path = Path(args.address_map)
+    address_map = _load_address_map(map_path)
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        raise ValueError("timeout must be a positive number of seconds")
+
+    plan = build_run_plan(script, address_map)
+    blocked = _blocked_services(script)
+    result = _execute_run_plan(plan, args.timeout) if args.execute else None
+
+    if args.json:
+        print(
+            json.dumps(
+                _run_script_payload(
+                    script,
+                    script_path,
+                    map_path,
+                    address_map,
+                    plan,
+                    result,
+                    blocked,
+                ),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+    elif result is None:
+        _print_run_plan(plan, script_path, map_path, address_map, blocked)
+    else:
+        print(f"Script: {script_path}")
+        print(f"Docno: {plan.docno or '-'}")
+        print(f"Address map: {map_path}")
+        _print_unmapped(plan)
+        _print_blocked(blocked)
+        print()
+        _print_run_result(result)
+
+    if result is None:
+        return 0
+    if result.aborted or any(
+        record.status == STATUS_ERROR for record in result.records
+    ):
+        return 1
+    return 0
+
+
+def cmd_vida_script(args: argparse.Namespace) -> int:
+    path = Path(args.script)
+    script = _load_vida_script(path)
 
     if args.json:
         print(
@@ -1156,6 +1400,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vida_script.add_argument("--json", action="store_true", help="print stable JSON")
     vida_script.set_defaults(func=cmd_vida_script)
+
+    vida_run = subparsers.add_parser(
+        "vida-run-script",
+        help="plan or run the read-only requests of a VIDA script",
+    )
+    vida_run.add_argument(
+        "--script", type=Path, required=True, help="VIDA script ZIP or XML file"
+    )
+    vida_run.add_argument(
+        "--address-map",
+        type=Path,
+        required=True,
+        help="JSON map of logical ECU addresses to 11-bit physical CAN request IDs",
+    )
+    vida_run.add_argument(
+        "--execute",
+        action="store_true",
+        help="send the planned reads through the native DiCE transport",
+    )
+    vida_run.add_argument(
+        "--timeout",
+        type=float,
+        default=1.5,
+        help="response window per request in seconds, default 1.5",
+    )
+    vida_run.add_argument("--json", action="store_true", help="print stable JSON")
+    vida_run.set_defaults(func=cmd_vida_run_script)
 
     readout = subparsers.add_parser("readout", help="passively print CAN frames")
     add_bus_args(readout)
