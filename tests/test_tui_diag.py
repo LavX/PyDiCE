@@ -1,15 +1,21 @@
 import json
+import os
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from volvo_p3.diagnostics import build_report
 from volvo_p3.tui import (
+    NativeScanResult,
     VolvoTuiApp,
     build_diag_catalog_view,
     build_diag_report,
+    build_live_diag_lines,
+    build_live_scan_options,
     build_script_plan_view,
+    default_live_diag_profile_path,
     format_diag_dtc_lines,
     format_diag_fault_lines,
     format_diag_network_lines,
@@ -322,6 +328,257 @@ class DiagnosticScriptTests(unittest.TestCase):
         self.assertEqual(blank, ["error: enter a diagnostic script ZIP or XML path"])
 
 
+class LiveDiagReadTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.root = Path(self.tempdir.name)
+        self.scan_path = self.root / "scan.json"
+        self.scan_path.write_text(
+            json.dumps(scan_with_dtcs()), encoding="utf-8"
+        )
+
+    def _fake_scan(self, calls, report_path=None):
+        report = self.scan_path if report_path is None else report_path
+
+        def fake(options, *, profile_path=None):
+            calls.append((list(options), profile_path))
+            return NativeScanResult(
+                report, profile_path, ("Saved scan: {}".format(report),)
+            )
+
+        return fake
+
+    def test_live_scan_options_use_catalog_and_read_only_profile(self):
+        profile = self.root / "profile.json"
+        profile.write_text(json.dumps({"modules": []}), encoding="utf-8")
+
+        options = build_live_scan_options(CATALOG, "2.5", profile)
+
+        self.assertEqual(
+            options,
+            [
+                "--timeout",
+                "2.5",
+                "--diag-catalog",
+                str(CATALOG),
+                "--profile",
+                str(profile),
+            ],
+        )
+        self.assertNotIn("--save-profile", options)
+
+        plain = build_live_scan_options(CATALOG, "1.5", "")
+        self.assertNotIn("--profile", plain)
+
+    def test_live_scan_options_reject_bad_input(self):
+        with self.assertRaises(FileNotFoundError) as caught:
+            build_live_scan_options(MISSING, "1.5")
+        self.assertIn("catalog not found", str(caught.exception))
+
+        with self.assertRaises(FileNotFoundError) as caught:
+            build_live_scan_options(CATALOG, "1.5", MISSING)
+        self.assertIn("profile not found", str(caught.exception))
+
+        for timeout in ("0", "-1", "nan", "inf", "soon"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaises(ValueError):
+                    build_live_scan_options(CATALOG, timeout)
+
+        with self.assertRaises(ValueError) as caught:
+            build_live_scan_options("  ", "1.5")
+        self.assertIn("enter a service catalog JSON path", str(caught.exception))
+
+    def test_live_read_returns_counts_faults_and_network_lines(self):
+        app = VolvoTuiApp()
+        calls = []
+
+        with mock.patch.object(
+            app, "_run_native_scan_result", self._fake_scan(calls)
+        ):
+            lines = app._diag_live_read(
+                {
+                    "live_catalog": str(CATALOG),
+                    "live_timeout": "1.5",
+                    "live_profile": "",
+                }
+            )
+
+        self.assertEqual(len(calls), 1)
+        options, profile_path = calls[0]
+        self.assertIn("--diag-catalog", options)
+        self.assertIn(str(CATALOG), options)
+        self.assertIn("--timeout", options)
+        self.assertNotIn("--save-profile", options)
+        self.assertIsNone(profile_path)
+
+        self.assertEqual(lines[0], "Saved scan: {}".format(self.scan_path))
+        text = "\n".join(lines)
+        self.assertIn("Live DTC read: unit scan", lines)
+        self.assertIn(
+            "modules: 4 | DTC records: 4 | described: 3 | current faults: 3",
+            lines,
+        )
+        self.assertIn("Diagnostic fault trace:", text)
+        self.assertIn(
+            "  P010100  active  MAF A circuit range/performance", lines
+        )
+        self.assertIn("Diagnostic network status:", text)
+        self.assertIn("total modules: 4", lines)
+        self.assertIn("no response: TCM", lines)
+
+    def test_live_read_passes_saved_profile_without_writing_it(self):
+        app = VolvoTuiApp()
+        calls = []
+        profile = self.root / "profile.json"
+        profile.write_text(json.dumps({"modules": []}), encoding="utf-8")
+
+        with mock.patch.object(
+            app, "_run_native_scan_result", self._fake_scan(calls)
+        ):
+            app._diag_live_read(
+                {
+                    "live_catalog": str(CATALOG),
+                    "live_timeout": "1.5",
+                    "live_profile": str(profile),
+                }
+            )
+
+        options, _ = calls[0]
+        self.assertEqual(options[-2:], ["--profile", str(profile)])
+        self.assertNotIn("--save-profile", options)
+
+    def test_live_read_reports_missing_catalog_without_scanning(self):
+        app = VolvoTuiApp()
+
+        def fail(*_args, **_kwargs):
+            raise AssertionError("the scan must not start")
+
+        with mock.patch.object(app, "_run_native_scan_result", fail):
+            lines = app._diag_live_read(
+                {
+                    "live_catalog": str(MISSING),
+                    "live_timeout": "1.5",
+                    "live_profile": "",
+                }
+            )
+
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("error:"))
+        self.assertIn("catalog not found", lines[0])
+
+    def test_live_read_turns_scan_failure_into_error_line(self):
+        app = VolvoTuiApp()
+
+        def fail(options, *, profile_path=None):
+            raise RuntimeError("native scan exited with code 1")
+
+        with mock.patch.object(app, "_run_native_scan_result", fail):
+            lines = app._diag_live_read(
+                {
+                    "live_catalog": str(CATALOG),
+                    "live_timeout": "1.5",
+                    "live_profile": "",
+                }
+            )
+
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("error:"))
+        self.assertIn("live DTC read failed", lines[0])
+        self.assertIn("code 1", lines[0])
+
+    def test_live_read_reports_a_missing_saved_report(self):
+        app = VolvoTuiApp()
+        calls = []
+
+        with mock.patch.object(
+            app,
+            "_run_native_scan_result",
+            self._fake_scan(calls, report_path=MISSING),
+        ):
+            lines = app._diag_live_read(
+                {
+                    "live_catalog": str(CATALOG),
+                    "live_timeout": "1.5",
+                    "live_profile": "",
+                }
+            )
+
+        text = "\n".join(lines)
+        self.assertIn("Saved scan:", lines[0])
+        self.assertIn("scan report not found", text)
+
+    def test_live_lines_handle_missing_saved_report(self):
+        lines = build_live_diag_lines(MISSING, CATALOG)
+
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("error:"))
+        self.assertIn("scan report not found", lines[0])
+
+    def test_native_scan_result_exposes_the_saved_report_path(self):
+        app = VolvoTuiApp()
+        original = Path.cwd()
+        self.addCleanup(os.chdir, original)
+        os.chdir(self.root)
+        seen = []
+
+        def fake_cli(argv):
+            seen.append(list(argv))
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_text(
+                json.dumps(scan_with_dtcs()), encoding="utf-8"
+            )
+            print("Report: {}".format(output))
+            return 0
+
+        with mock.patch("volvo_p3.cli.main", fake_cli):
+            result = app._run_native_scan_result(
+                ["--timeout", "1.5", "--diag-catalog", str(CATALOG)]
+            )
+
+        self.assertEqual(seen[0][0], "dice-scan")
+        self.assertIn("--diag-catalog", seen[0])
+        self.assertIn(str(CATALOG), seen[0])
+        self.assertNotIn("--save-profile", seen[0])
+        self.assertEqual(result.report_path.parent, self.root / "reports")
+        self.assertTrue(result.report_path.is_file())
+        self.assertIn(
+            "Saved scan: {}".format(result.report_path), result.lines
+        )
+        self.assertTrue(
+            any("Report:" in line for line in app.logs)
+        )
+
+    def test_native_scan_wrapper_still_returns_lines(self):
+        app = VolvoTuiApp()
+        result = NativeScanResult(self.scan_path, None, ("Saved scan: x",))
+
+        with mock.patch.object(
+            app,
+            "_run_native_scan_result",
+            lambda options, *, profile_path=None: result,
+        ):
+            lines = app._run_native_scan(["--timeout", "1.5"])
+
+        self.assertEqual(lines, ["Saved scan: x"])
+
+    def test_default_live_profile_path_needs_an_existing_file(self):
+        original = Path.cwd()
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        self.addCleanup(os.chdir, original)
+
+        os.chdir(tempdir.name)
+        self.assertEqual(default_live_diag_profile_path(), "")
+
+        reports = Path(tempdir.name) / "reports"
+        reports.mkdir()
+        (reports / "my-car-complete.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(
+            default_live_diag_profile_path(), "reports/my-car-complete.json"
+        )
+
+
 class DiagMenuTests(unittest.TestCase):
     def test_menu_exposes_diag_actions(self):
         app = VolvoTuiApp()
@@ -336,6 +593,7 @@ class DiagMenuTests(unittest.TestCase):
             [action.name for action in diag.actions],
             [
                 "Load Catalog",
+                "Live DTC Read",
                 "DTC Overview",
                 "Fault Trace",
                 "Network Status",
@@ -347,6 +605,10 @@ class DiagMenuTests(unittest.TestCase):
         )
         self.assertEqual(
             [field.name for field in diag.actions[1].fields],
+            ["live_catalog", "live_timeout", "live_profile"],
+        )
+        self.assertEqual(
+            [field.name for field in diag.actions[2].fields],
             ["diag_scan", "diag_catalog"],
         )
 
