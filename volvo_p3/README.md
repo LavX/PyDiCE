@@ -1,11 +1,11 @@
 # Volvo P3 CAN Diagnostics
 
-This is a small, transport-agnostic starting point for VIDA-like Volvo P3
+This is a small, transport-agnostic starting point for reference-style Volvo P3
 diagnostics. It intentionally starts with raw CAN visibility and DTC management
-instead of full VIDA feature parity.
+instead of full reference feature parity.
 
 The implementation uses `python-can` for CAN I/O. It does not talk to an
-ELM327 adapter and it does not depend on VIDA.
+ELM327 adapter and it does not depend on the vendor suite.
 
 ## Commands
 

@@ -1,12 +1,12 @@
-"""Build read-only VIDA-style diagnostic views from saved scan reports.
+"""Build read-only service-style diagnostic views from saved scan reports.
 
 This module is a pure data transform. It reads the JSON-shaped dictionaries
 produced by ``dice-scan`` (and the discovery profiles accepted by
 ``--profile``), optionally merges descriptions from a code catalog, and builds
-the three views VIDA presents for a readout: the module list, network status,
+the three views the diagnostic workflow presents for a readout: the module list, network status,
 and fault trace.
 
-It never talks to a vehicle, opens a CAN channel, imports a VIDA catalog
+It never talks to a vehicle, opens a CAN channel, imports a service catalog
 implementation, or changes a diagnostic session. Unknown report fields,
 module records, and DTC records are kept in ``raw`` mappings so a view can be
 round-tripped without losing the evidence it came from.
@@ -95,7 +95,7 @@ class DiagnosticDtc:
 
     ``description`` is ``None`` when no catalog entry matched. The original
     record is retained in ``raw`` and is not modified when a description is
-    merged. ``classification`` is a VIDA-style bucket computed from the
+    merged. ``classification`` is a service-style bucket computed from the
     effective status bits, or from the reported status bits when the report
     has no effective bits.
     """
@@ -116,7 +116,7 @@ class DiagnosticDtc:
 
     @property
     def status(self) -> str:
-        """Return the VIDA-style fault state (alias for ``classification``)."""
+        """Return the service-style fault state (alias for ``classification``)."""
         return self.classification
 
     @property
@@ -302,7 +302,7 @@ class NetworkStatus:
 
 @dataclass(frozen=True)
 class DiagnosticReport:
-    """A read-only VIDA-style view built from one scan report.
+    """A read-only service-style view built from one scan report.
 
     ``summary`` and ``metadata`` keep the scan's own summary and any top-level
     fields the view does not interpret. ``vehicle`` is the caller's optional
@@ -396,7 +396,7 @@ def build_report(
 
     ``scan`` is not mutated. ``catalog`` may be any of the mapping shapes
     described in the module docstring. ``vehicle`` is optional profile data
-    (for example a VIN, model year, or a VIDA profile title) and is included
+    (for example a VIN, model year, or a profile title) and is included
     unchanged in the report.
     """
     if not isinstance(scan, Mapping):

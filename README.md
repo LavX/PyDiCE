@@ -1,7 +1,7 @@
 # PYOBD
 
 PYOBD started as a generic OBD2 tool. The current work has shifted to Volvo
-P3 diagnostics with a DiCE adapter and Python, without VIDA or Windows
+P3 diagnostics with a DiCE adapter and Python, without the vendor diagnostic suite or Windows
 dependencies.
 
 The native DiCE readout work is being exercised on a 2014 Volvo V60 D6 plug-in
@@ -51,41 +51,41 @@ channel. Other buses, 29-bit addressing, legacy D2, and modules requiring
 other diagnostic sessions are not automatically scanned. A timeout is not
 proof that a module is absent or fault-free.
 
-### VIDA-style views
+### Diagnostic data views
 
-The VIDA layer exports the recovered DTC descriptions and request timing from
-the image, parses VIDA script bodies, and builds read-only DTC, network and
+The diagnostic data layer exports the recovered DTC descriptions and request timing from
+the image, parses diagnostic script bodies, and builds read-only DTC, network and
 fault-trace views. The catalog export needs no SQL Server.
 
 ```sh
-python3 tools/export_vida_catalog.py --image /mnt/vida --out reports/vida_catalog.json
-python3 -m volvo_p3.cli vida-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/vida_catalog.json
-sudo python3 -m volvo_p3.cli dice-scan --discover --vida-catalog reports/vida_catalog.json
-python3 -m volvo_p3.cli vida-script --script path/to/script.zip
-python3 -m volvo_p3.cli vida-run-script --script path/to/script.zip --address-map reports/vida_addresses.json
+python3 tools/export_diag_catalog.py --image /mnt/vida --out reports/diag_catalog.json
+python3 -m volvo_p3.cli diag-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/diag_catalog.json
+sudo python3 -m volvo_p3.cli dice-scan --discover --diag-catalog reports/diag_catalog.json
+python3 -m volvo_p3.cli diag-script --script path/to/script.zip
+python3 -m volvo_p3.cli diag-run-script --script path/to/script.zip --address-map reports/address_map.json
 ```
 
-`vida-run-script` only plans by default. `--execute` sends the planned read
+`diag-run-script` only plans by default. `--execute` sends the planned read
 services through the native DiCE transport; non-read services are never sent.
 The logical-address map is explicit because the shipped `T121_Config` is empty.
-See [vida-diagnostics.md](docs/vida-diagnostics.md).
+See [diagnostics-data.md](docs/diagnostics-data.md).
 
 The earlier reverse-engineering notes below are historical.
 
 Background material lives under `docs/`: the native path in
 [native-dice.md](docs/native-dice.md), the recovered adapter command space in
-[dice-compatibility.md](docs/dice-compatibility.md), the VIDA runtime notes in
-[vida-diagnostics.md](docs/vida-diagnostics.md), and the VIDA reference notes
+[dice-compatibility.md](docs/dice-compatibility.md), the diagnostic runtime notes in
+[diagnostics-data.md](docs/diagnostics-data.md), and the source reference notes
 in [vida-vehicle-profile.md](docs/vida-vehicle-profile.md),
 [vida-diagnostics-client.md](docs/vida-diagnostics-client.md),
 [vida-dtc-readout.md](docs/vida-dtc-readout.md),
 [vida-image-boundary.md](docs/vida-image-boundary.md), and
 [vida-second-pass.md](docs/vida-second-pass.md).
 
-## Scope From VIDA Help
+## Scope From Reference Help
 
-`VIDA-Help-en-GB.pdf` confirms the diagnostic workflow we should mirror and
-the parts we can leave out.
+The reference help document confirms the diagnostic workflow we should mirror
+and the parts we can leave out.
 
 Keep:
 
@@ -207,7 +207,7 @@ wire prefix were incorrect. The native outer framing uses B5.
 ## To-Dos
 
 * Extend the TUI's diagnostics views so network state and fault-trace output
-  are closer to VIDA's presentation.
+  are closer to the reference presentation.
 * Add clearer vehicle identification and module mapping in the TUI once real
   captures from the XC60 are available.
 * Map real Volvo response frames to human-readable DTC and module labels.

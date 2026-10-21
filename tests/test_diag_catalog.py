@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from volvo_p3.vida_catalog import (
+from volvo_p3.diag_catalog import (
     CatalogError,
     SCHEMA_NAME,
     SCHEMA_VERSION,
@@ -18,12 +18,12 @@ from volvo_p3.vida_catalog import (
 )
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "vida_catalog.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "diag_catalog.json"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-EXPORTER = REPOSITORY_ROOT / "tools" / "export_vida_catalog.py"
+EXPORTER = REPOSITORY_ROOT / "tools" / "export_diag_catalog.py"
 
 
-class VidaCatalogTests(unittest.TestCase):
+class DiagnosticCatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.catalog = load_catalog(FIXTURE)
@@ -74,7 +74,7 @@ class VidaCatalogTests(unittest.TestCase):
         self.assertIsNotNone(self.catalog.lookup_dtc("P010100"))
         self.assertIsNotNone(self.catalog.lookup_dtc("P010101"))
 
-    def test_describe_returns_vida_style_record(self):
+    def test_describe_returns_diag_style_record(self):
         entry = self.catalog.describe_dtc("P034211")
         self.assertIsNotNone(entry)
         self.assertTrue(entry.long_text)

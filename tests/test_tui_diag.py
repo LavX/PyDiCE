@@ -7,24 +7,24 @@ from pathlib import Path
 from volvo_p3.diagnostics import build_report
 from volvo_p3.tui import (
     VolvoTuiApp,
-    build_vida_catalog_view,
-    build_vida_report,
-    build_vida_script_view,
-    format_vida_dtc_lines,
-    format_vida_fault_lines,
-    format_vida_network_lines,
-    vida_dtc_overview_lines,
-    vida_fault_trace_lines,
-    vida_network_status_lines,
+    build_diag_catalog_view,
+    build_diag_report,
+    build_script_plan_view,
+    format_diag_dtc_lines,
+    format_diag_fault_lines,
+    format_diag_network_lines,
+    diag_dtc_overview_lines,
+    diag_fault_trace_lines,
+    diag_network_status_lines,
 )
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
 SCAN = FIXTURES / "my-car-complete.json"
-CATALOG = FIXTURES / "vida_catalog.json"
-SCRIPT_XML = FIXTURES / "vida_script_read_dtc.xml"
-SCRIPT_CLEAR = FIXTURES / "vida_script_clear_dtc.xml"
-SCRIPT_MALFORMED = FIXTURES / "vida_script_malformed.xml"
+CATALOG = FIXTURES / "diag_catalog.json"
+SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
+SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
+SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
 MISSING = FIXTURES / "does-not-exist.json"
 
 
@@ -67,7 +67,7 @@ def scan_with_dtcs():
     }
 
 
-class VidaReportTests(unittest.TestCase):
+class DiagReportTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
@@ -77,7 +77,7 @@ class VidaReportTests(unittest.TestCase):
         )
 
     def test_build_report_reads_fixture_scan(self):
-        report = build_vida_report(SCAN)
+        report = build_diag_report(SCAN)
 
         self.assertEqual(report.name, "Discovered UDS modules including partial responders")
         self.assertEqual(report.module_count, 18)
@@ -85,7 +85,7 @@ class VidaReportTests(unittest.TestCase):
         self.assertEqual(report.modules[0].request_id, 0x720)
 
     def test_build_report_merges_catalog_descriptions(self):
-        report = build_vida_report(self.scan_path, CATALOG)
+        report = build_diag_report(self.scan_path, CATALOG)
 
         self.assertEqual(report.module_count, 4)
         self.assertEqual(report.dtc_count, 4)
@@ -105,22 +105,22 @@ class VidaReportTests(unittest.TestCase):
 
     def test_build_report_missing_scan_raises(self):
         with self.assertRaises(FileNotFoundError) as caught:
-            build_vida_report(MISSING)
+            build_diag_report(MISSING)
 
         self.assertIn("scan report not found", str(caught.exception))
 
     def test_build_report_missing_catalog_raises(self):
         with self.assertRaises(FileNotFoundError) as caught:
-            build_vida_report(SCAN, MISSING)
+            build_diag_report(SCAN, MISSING)
 
         self.assertIn("catalog not found", str(caught.exception))
 
     def test_dtc_lines_show_module_ids_and_counts(self):
-        report = build_vida_report(SCAN)
+        report = build_diag_report(SCAN)
 
-        lines = format_vida_dtc_lines(report)
+        lines = format_diag_dtc_lines(report)
 
-        self.assertTrue(lines[0].startswith("VIDA DTC overview:"))
+        self.assertTrue(lines[0].startswith("Diagnostic DTC overview:"))
         self.assertIn(
             "modules: 18 | DTC records: 0 | described: 0 | current faults: 0",
             lines,
@@ -131,11 +131,11 @@ class VidaReportTests(unittest.TestCase):
         )
 
     def test_dtc_lines_use_catalog_text_and_leave_unknown_bare(self):
-        report = build_vida_report(
+        report = build_diag_report(
             self.scan_path, CATALOG, {"vin": "yv1dz8256c2000000"}
         )
 
-        lines = format_vida_dtc_lines(report)
+        lines = format_diag_dtc_lines(report)
 
         self.assertIn("vin: YV1DZ8256C2000000", lines)
         self.assertIn(
@@ -162,15 +162,15 @@ class VidaReportTests(unittest.TestCase):
         bad.write_text("{not json", encoding="utf-8")
 
         with self.assertRaises(ValueError) as caught:
-            build_vida_report(bad)
+            build_diag_report(bad)
 
         self.assertIn("not valid JSON", str(caught.exception))
 
     def test_missing_scan_returns_error_line(self):
         wrappers = (
-            vida_dtc_overview_lines,
-            vida_network_status_lines,
-            vida_fault_trace_lines,
+            diag_dtc_overview_lines,
+            diag_network_status_lines,
+            diag_fault_trace_lines,
         )
         for wrapper in wrappers:
             with self.subTest(wrapper=wrapper.__name__):
@@ -181,18 +181,18 @@ class VidaReportTests(unittest.TestCase):
                 self.assertIn("scan report not found", lines[0])
 
         self.assertEqual(
-            vida_dtc_overview_lines(""),
+            diag_dtc_overview_lines(""),
             ["error: enter a scan report JSON path"],
         )
 
     def test_missing_catalog_returns_error_line(self):
-        lines = vida_dtc_overview_lines(SCAN, MISSING)
+        lines = diag_dtc_overview_lines(SCAN, MISSING)
 
         self.assertEqual(len(lines), 1)
         self.assertIn("catalog not found", lines[0])
 
     def test_catalog_view_reports_sections(self):
-        lines = build_vida_catalog_view(CATALOG)
+        lines = build_diag_catalog_view(CATALOG)
 
         self.assertIn("source: synthetic", lines)
         self.assertIn("dtc descriptions: 5 (4 codes)", lines)
@@ -201,17 +201,17 @@ class VidaReportTests(unittest.TestCase):
         self.assertIn("scripts: 1", lines)
 
     def test_catalog_view_handles_missing_and_blank_paths(self):
-        missing = build_vida_catalog_view(MISSING)
-        blank = build_vida_catalog_view("  ")
+        missing = build_diag_catalog_view(MISSING)
+        blank = build_diag_catalog_view("  ")
 
         self.assertEqual(len(missing), 1)
         self.assertIn("catalog not found", missing[0])
-        self.assertEqual(blank, ["error: enter a VIDA catalog JSON path"])
+        self.assertEqual(blank, ["error: enter a service catalog JSON path"])
 
     def test_network_status_counts_buckets(self):
         report = build_report(scan_with_dtcs())
 
-        lines = format_vida_network_lines(report)
+        lines = format_diag_network_lines(report)
 
         self.assertIn("total modules: 4", lines)
         self.assertIn("responders: 3 (75%)", lines)
@@ -222,7 +222,7 @@ class VidaReportTests(unittest.TestCase):
         self.assertTrue(lines[-1].startswith("coverage:"))
 
     def test_network_status_lists_unclassified_fixture_modules(self):
-        lines = vida_network_status_lines(SCAN)
+        lines = diag_network_status_lines(SCAN)
         text = "\n".join(lines)
 
         self.assertIn("total modules: 18", lines)
@@ -230,9 +230,9 @@ class VidaReportTests(unittest.TestCase):
         self.assertIn("unclassified: DIM, CEM", text)
 
     def test_fault_trace_groups_by_module_and_state(self):
-        report = build_vida_report(self.scan_path, CATALOG)
+        report = build_diag_report(self.scan_path, CATALOG)
 
-        lines = format_vida_fault_lines(report)
+        lines = format_diag_fault_lines(report)
 
         self.assertIn("current faults: 3 | groups: 4", lines)
         self.assertIn("ECM  active  (1)", lines)
@@ -245,21 +245,21 @@ class VidaReportTests(unittest.TestCase):
         self.assertIn("  U9999  unknown", lines)
 
     def test_fault_trace_without_dtcs(self):
-        report = build_vida_report(SCAN)
+        report = build_diag_report(SCAN)
 
-        lines = format_vida_fault_lines(report)
+        lines = format_diag_fault_lines(report)
 
         self.assertIn("current faults: 0 | groups: 0", lines)
         self.assertIn("no DTC records in this report", lines)
 
 
-class VidaScriptTests(unittest.TestCase):
+class DiagnosticScriptTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
 
     def test_script_plan_xml(self):
-        lines = build_vida_script_view(SCRIPT_XML)
+        lines = build_script_plan_view(SCRIPT_XML)
 
         self.assertIn("docno: VCC-227144", lines)
         self.assertIn("title: Read DTCs", lines)
@@ -289,14 +289,14 @@ class VidaScriptTests(unittest.TestCase):
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("VCC-227144", SCRIPT_XML.read_text(encoding="utf-8"))
 
-        lines = build_vida_script_view(archive_path)
+        lines = build_script_plan_view(archive_path)
 
         self.assertIn("docno: VCC-227144", lines)
         self.assertIn("read-only plan: 3 requests", lines)
         self.assertIn("DTC list: list=DtcList value=Dtc.value text=Dtc.text", lines)
 
     def test_script_plan_drops_non_read_services(self):
-        lines = build_vida_script_view(SCRIPT_CLEAR)
+        lines = build_script_plan_view(SCRIPT_CLEAR)
 
         self.assertIn("type: ClearDtc", lines)
         dropped = [line for line in lines if line.startswith("dropped services:")]
@@ -310,44 +310,44 @@ class VidaScriptTests(unittest.TestCase):
         self.assertNotIn("service=0x14", planned[0])
 
     def test_script_plan_handles_missing_and_malformed_paths(self):
-        missing = build_vida_script_view(MISSING)
-        malformed = build_vida_script_view(SCRIPT_MALFORMED)
-        blank = build_vida_script_view("")
+        missing = build_script_plan_view(MISSING)
+        malformed = build_script_plan_view(SCRIPT_MALFORMED)
+        blank = build_script_plan_view("")
 
         self.assertEqual(len(missing), 1)
         self.assertIn("script not found", missing[0])
         self.assertEqual(len(malformed), 1)
         self.assertTrue(malformed[0].startswith("error:"))
         self.assertIn("malformed", malformed[0].lower())
-        self.assertEqual(blank, ["error: enter a VIDA script ZIP or XML path"])
+        self.assertEqual(blank, ["error: enter a diagnostic script ZIP or XML path"])
 
 
-class VidaMenuTests(unittest.TestCase):
-    def test_menu_exposes_vida_actions(self):
+class DiagMenuTests(unittest.TestCase):
+    def test_menu_exposes_diag_actions(self):
         app = VolvoTuiApp()
 
         titles = [section.title for section in app.sections]
         self.assertEqual(
             titles,
-            ["Connection", "Vehicle Profile", "Native DiCE", "Diagnostics", "VIDA"],
+            ["Connection", "Vehicle Profile", "Native DiCE", "Diagnostics", "Service Data"],
         )
-        vida = app.sections[-1]
+        diag = app.sections[-1]
         self.assertEqual(
-            [action.name for action in vida.actions],
+            [action.name for action in diag.actions],
             [
-                "Load VIDA Catalog",
-                "VIDA DTC Overview",
-                "VIDA Fault Trace",
-                "VIDA Network Status",
-                "VIDA Script Plan",
+                "Load Catalog",
+                "DTC Overview",
+                "Fault Trace",
+                "Network Status",
+                "Script Plan",
             ],
         )
         self.assertEqual(
-            [field.name for field in vida.actions[0].fields], ["vida_catalog"]
+            [field.name for field in diag.actions[0].fields], ["diag_catalog"]
         )
         self.assertEqual(
-            [field.name for field in vida.actions[1].fields],
-            ["vida_scan", "vida_catalog"],
+            [field.name for field in diag.actions[1].fields],
+            ["diag_scan", "diag_catalog"],
         )
 
     def test_actions_return_error_lines_instead_of_raising(self):
@@ -355,11 +355,11 @@ class VidaMenuTests(unittest.TestCase):
         missing = str(MISSING)
 
         cases = (
-            (app._vida_load_catalog, {"vida_catalog": missing}),
-            (app._vida_dtc_overview, {"vida_scan": missing, "vida_catalog": ""}),
-            (app._vida_fault_trace, {"vida_scan": missing, "vida_catalog": ""}),
-            (app._vida_network_status, {"vida_scan": missing}),
-            (app._vida_script_plan, {"vida_script": missing}),
+            (app._diag_load_catalog, {"diag_catalog": missing}),
+            (app._diag_dtc_overview, {"diag_scan": missing, "diag_catalog": ""}),
+            (app._diag_fault_trace, {"diag_scan": missing, "diag_catalog": ""}),
+            (app._diag_network_status, {"diag_scan": missing}),
+            (app._script_plan_plan, {"script_plan": missing}),
         )
         for handler, values in cases:
             with self.subTest(handler=handler.__name__):

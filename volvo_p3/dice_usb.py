@@ -145,7 +145,7 @@ class DiceUsbTransport:
 
     The public shape mirrors the CAN transport enough for the diagnostic CLI to
     use it later. The endpoint setup and command protocol need to be filled in
-    from VIDA/J2534 reverse engineering.
+    from vendor J2534 reverse engineering.
     """
 
     def __init__(self):

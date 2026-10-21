@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Export a runtime VIDA catalog from the VIDA image or an existing JSON file.
+"""Export a runtime diagnostic catalog from the source image or an existing JSON file.
 
-The image path is read only. Nothing is attached to SQL Server and no VIDA
+The image path is read only. Nothing is attached to SQL Server and no source data
 process is started. The exporter reads MDF pages directly:
 
 * ``DiceTiming_Data.MDF``: ``Requests``, ``MessageTiming`` and
@@ -42,7 +42,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from volvo_p3.vida_catalog import (  # noqa: E402
+from volvo_p3.diag_catalog import (  # noqa: E402
     CatalogError,
     CatalogSource,
     DatabaseSource,
@@ -50,7 +50,7 @@ from volvo_p3.vida_catalog import (  # noqa: E402
     SCHEMA_NAME,
     SCHEMA_VERSION,
     TimingEntry,
-    VidaCatalog,
+    DiagnosticCatalog,
     catalog_from_dict,
     dump_catalog,
 )
@@ -295,8 +295,8 @@ def build_from_image(
     language_id: int = 4,
     language_name: str = "en-US",
     include_sha256: bool = True,
-) -> Tuple[VidaCatalog, Dict[str, Any]]:
-    """Build a catalog from a VIDA image root."""
+) -> Tuple[DiagnosticCatalog, Dict[str, Any]]:
+    """Build a catalog from a source image root."""
 
     carcom_path, timing_path = _resolve_database_paths(image)
 
@@ -348,15 +348,15 @@ def build_from_image(
     ]
 
     source = CatalogSource(
-        kind="vida-mdf",
+        kind="source-mdf",
         generated_at=_utc_timestamp(),
         image=str(image),
         databases=tuple(databases),
-        extractor="tools/export_vida_catalog.py",
+        extractor="tools/export_diag_catalog.py",
         language=language_name,
         notes=tuple(notes),
     )
-    catalog = VidaCatalog(
+    catalog = DiagnosticCatalog(
         source=source,
         dtc_descriptions=tuple(descriptions),
         timing=tuple(timing),
@@ -371,7 +371,7 @@ def build_from_image(
     return catalog, stats
 
 
-def build_from_json(path: Path) -> VidaCatalog:
+def build_from_json(path: Path) -> DiagnosticCatalog:
     """Load a complete catalog or normalize a small JSON mapping.
 
     Accepted input for the mapping form:
@@ -388,7 +388,7 @@ def build_from_json(path: Path) -> VidaCatalog:
           "scripts": []
         }
 
-    A document already carrying ``"schema": "pydice.vida_catalog"`` is loaded
+    A document already carrying ``"schema": "pydice.diag_catalog"`` is loaded
     with the normal validator and re-serialized unchanged in shape.
     """
 
@@ -448,7 +448,7 @@ def build_from_json(path: Path) -> VidaCatalog:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Build a runtime VIDA catalog from the read-only VIDA image, or "
+            "Build a runtime service catalog from the read-only source image, or "
             "transform an existing JSON file."
         )
     )
@@ -456,7 +456,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     source_group.add_argument(
         "--image",
         type=Path,
-        help="VIDA image root, for example /mnt/vida",
+        help="source image root, for example /mnt/vida",
     )
     source_group.add_argument(
         "--from-json",

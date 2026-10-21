@@ -1,15 +1,15 @@
-"""Guarded, read-only execution of VIDA diagnostic scripts.
+"""Guarded, read-only execution of diagnostic scripts.
 
-A VIDA script names a logical ``EcuAddress`` or ``EcuType``; it does not carry
+A diagnostic script names a logical ``EcuAddress`` or ``EcuType``; it does not carry
 the physical CAN identifier of the module. This module never guesses that
 translation. The caller supplies an :class:`AddressMap`, and a request whose
 logical address has no entry is reported as ``skipped_unmapped``.
 
 Safety rules enforced here, not trusted from the script:
 
-* Only the four read services from :mod:`volvo_p3.vida_script` (0x01, 0x09,
+* Only the four read services from :mod:`volvo_p3.script_plan` (0x01, 0x09,
   0x19, 0x22) can become frames. ``build_run_plan`` reads requests exclusively
-  through ``VidaScript.read_only_requests`` and ``run_plan`` re-checks every
+  through ``DiagnosticScript.read_only_requests`` and ``run_plan`` re-checks every
   service byte immediately before ``send``.
 * No diagnostic session control, security access, ECU reset, keepalive,
   communication control, routine control, clear or write service is ever sent.
@@ -37,11 +37,11 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .protocol import VolvoFrame
-from .vida_script import (
+from .script_plan import (
     NON_READ_SERVICES,
     READ_SERVICE_NAMES,
     ReadRequest,
-    VidaScript,
+    DiagnosticScript,
     is_read_only_service,
 )
 
@@ -138,7 +138,7 @@ class AddressMatch:
 class AddressMap:
     """Explicit logical-address to 11-bit physical CAN request ID mapping.
 
-    Keys are the integer values VIDA writes in an ``EcuAddress`` or ``EcuType``
+    Keys are the integer values the source writes in an ``EcuAddress`` or ``EcuType``
     property. A script node that has both is resolved by ``EcuAddress`` first,
     then ``EcuType``. Nothing is derived from the script itself.
     """
@@ -240,7 +240,7 @@ def parse_address_map(document: Any) -> AddressMap:
     Both ``{"addresses": {"0x11": "0x7E0"}}`` and a flat
     ``{"0x11": "0x7E0"}`` are accepted. Keys and values accept a ``0x``
     prefix, plain decimal, and unprefixed hexadecimal when they contain a
-    letter (``7E0``). A key without a prefix is decimal, matching the way VIDA
+    letter (``7E0``). A key without a prefix is decimal, matching the way the source
     writes ``EcuAddress`` and ``EcuType``.
     """
 
@@ -447,7 +447,7 @@ class RunResult:
         }
 
 
-def build_run_plan(script: VidaScript, address_map: AddressMap) -> RunPlan:
+def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan:
     """Build a plan from ``script.read_only_requests()`` only.
 
     Every request keeps the script's logical address. A request with no

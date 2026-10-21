@@ -3,10 +3,10 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from volvo_p3.vida_script import (
+from volvo_p3.script_plan import (
     READ_ONLY_SERVICES,
-    VidaScript,
-    VidaScriptError,
+    DiagnosticScript,
+    DiagnosticScriptError,
     classify_service,
     is_read_only_service,
     parse_script_xml,
@@ -49,13 +49,13 @@ def vehcomm(service_ids, ecu_address="17", extra=""):
     )
 
 
-class VidaScriptHeaderTests(unittest.TestCase):
+class DiagnosticScriptHeaderTests(unittest.TestCase):
     def test_parses_header_profiles_and_raw_xml(self):
-        text = fixture_text("vida_script_read_dtc.xml")
+        text = fixture_text("script_plan_read_dtc.xml")
 
         script = parse_script_xml(text)
 
-        self.assertIsInstance(script, VidaScript)
+        self.assertIsInstance(script, DiagnosticScript)
         self.assertEqual(script.docno, "VCC-227144")
         self.assertEqual(script.title, "Read DTCs")
         self.assertEqual(script.variant_id, "227144")
@@ -78,9 +78,9 @@ class VidaScriptHeaderTests(unittest.TestCase):
         self.assertEqual(script.ecus, ())
 
 
-class VidaScriptEcuTests(unittest.TestCase):
+class DiagnosticScriptEcuTests(unittest.TestCase):
     def setUp(self):
-        self.script = parse_script_xml(fixture_text("vida_script_read_dtc.xml"))
+        self.script = parse_script_xml(fixture_text("script_plan_read_dtc.xml"))
 
     def test_parses_ecu_address_mode_and_tester_address(self):
         plan = self.script.ecus[0]
@@ -139,9 +139,9 @@ class VidaScriptEcuTests(unittest.TestCase):
         self.assertEqual(plan.requests, ())
 
 
-class VidaScriptDtcTests(unittest.TestCase):
+class DiagnosticScriptDtcTests(unittest.TestCase):
     def test_parses_dtc_list_bindings(self):
-        script = parse_script_xml(fixture_text("vida_script_read_dtc.xml"))
+        script = parse_script_xml(fixture_text("script_plan_read_dtc.xml"))
 
         self.assertIsNotNone(script.dtc_list)
         plan = script.dtc_list
@@ -168,24 +168,24 @@ class VidaScriptDtcTests(unittest.TestCase):
         self.assertEqual(plan.text_path, "Dtc.text")
 
     def test_script_without_dtc_bindings_has_no_plan(self):
-        script = parse_script_xml(fixture_text("vida_script_clear_dtc.xml"))
+        script = parse_script_xml(fixture_text("script_plan_clear_dtc.xml"))
 
         self.assertIsNone(script.dtc_list)
 
 
-class VidaScriptZipTests(unittest.TestCase):
+class DiagnosticScriptZipTests(unittest.TestCase):
     def test_parses_single_entry_archive(self):
-        text = fixture_text("vida_script_read_dtc.xml")
+        text = fixture_text("script_plan_read_dtc.xml")
 
         script = parse_script_zip(
-            fixture_zip("vida_script_read_dtc.xml", "script.xml")
+            fixture_zip("script_plan_read_dtc.xml", "script.xml")
         )
 
         self.assertEqual(script, parse_script_xml(text))
 
     def test_accepts_archive_entry_without_xml_suffix(self):
         script = parse_script_zip(
-            fixture_zip("vida_script_read_dtc.xml", "0900c8af821ab23b")
+            fixture_zip("script_plan_read_dtc.xml", "0900c8af821ab23b")
         )
 
         self.assertEqual(script.docno, "VCC-227144")
@@ -193,10 +193,10 @@ class VidaScriptZipTests(unittest.TestCase):
     def test_rejects_archive_with_multiple_entries(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("one", fixture_text("vida_script_read_dtc.xml"))
-            archive.writestr("two", fixture_text("vida_script_read_dtc.xml"))
+            archive.writestr("one", fixture_text("script_plan_read_dtc.xml"))
+            archive.writestr("two", fixture_text("script_plan_read_dtc.xml"))
 
-        with self.assertRaisesRegex(VidaScriptError, "exactly one entry"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "exactly one entry"):
             parse_script_zip(buffer.getvalue())
 
     def test_rejects_empty_archive(self):
@@ -204,7 +204,7 @@ class VidaScriptZipTests(unittest.TestCase):
         with zipfile.ZipFile(buffer, "w"):
             pass
 
-        with self.assertRaisesRegex(VidaScriptError, "no file entries"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "no file entries"):
             parse_script_zip(buffer.getvalue())
 
     def test_rejects_directory_only_archive(self):
@@ -212,11 +212,11 @@ class VidaScriptZipTests(unittest.TestCase):
         with zipfile.ZipFile(buffer, "w") as archive:
             archive.writestr("nested/", "")
 
-        with self.assertRaisesRegex(VidaScriptError, "no file entries"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "no file entries"):
             parse_script_zip(buffer.getvalue())
 
     def test_rejects_data_that_is_not_a_zip(self):
-        with self.assertRaisesRegex(VidaScriptError, "not a valid ZIP archive"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "not a valid ZIP archive"):
             parse_script_zip(b"<script docno='x'/>")
 
     def test_rejects_non_bytes(self):
@@ -228,31 +228,31 @@ class VidaScriptZipTests(unittest.TestCase):
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("script", b"\xff\x00<script")
 
-        with self.assertRaisesRegex(VidaScriptError, "not valid"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "not valid"):
             parse_script_zip(buffer.getvalue())
 
     def test_reports_malformed_entry_with_its_name(self):
-        payload = fixture_zip("vida_script_malformed.xml", "bad-entry")
+        payload = fixture_zip("script_plan_malformed.xml", "bad-entry")
 
-        with self.assertRaisesRegex(VidaScriptError, "bad-entry.*malformed XML"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "bad-entry.*malformed XML"):
             parse_script_zip(payload)
 
 
-class VidaScriptErrorTests(unittest.TestCase):
+class DiagnosticScriptErrorTests(unittest.TestCase):
     def test_rejects_malformed_xml(self):
-        with self.assertRaisesRegex(VidaScriptError, "malformed XML"):
-            parse_script_xml(fixture_text("vida_script_malformed.xml"))
+        with self.assertRaisesRegex(DiagnosticScriptError, "malformed XML"):
+            parse_script_xml(fixture_text("script_plan_malformed.xml"))
 
     def test_rejects_empty_document(self):
-        with self.assertRaisesRegex(VidaScriptError, "missing root element"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "missing root element"):
             parse_script_xml("   \n")
 
     def test_rejects_declaration_without_root(self):
-        with self.assertRaisesRegex(VidaScriptError, "missing root element"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "missing root element"):
             parse_script_xml('<?xml version="1.0" encoding="utf-8"?>')
 
     def test_rejects_wrong_root(self):
-        with self.assertRaisesRegex(VidaScriptError, "missing <script> root"):
+        with self.assertRaisesRegex(DiagnosticScriptError, "missing <script> root"):
             parse_script_xml("<root><script/></root>")
 
     def test_rejects_non_text(self):
@@ -260,7 +260,7 @@ class VidaScriptErrorTests(unittest.TestCase):
             parse_script_xml(b"<script/>")
 
 
-class VidaScriptSafetyTests(unittest.TestCase):
+class DiagnosticScriptSafetyTests(unittest.TestCase):
     FORBIDDEN_SERVICES = (0x2E, 0x31, 0x27, 0x10, 0x14, 0x3E)
 
     def test_read_services_are_classified_read_only(self):
@@ -274,7 +274,7 @@ class VidaScriptSafetyTests(unittest.TestCase):
             self.assertNotEqual(classify_service(service_id), "read_only")
 
     def test_clear_script_exposes_only_the_read_request(self):
-        script = parse_script_xml(fixture_text("vida_script_clear_dtc.xml"))
+        script = parse_script_xml(fixture_text("script_plan_clear_dtc.xml"))
 
         requests = script.read_only_requests()
 
@@ -300,7 +300,7 @@ class VidaScriptSafetyTests(unittest.TestCase):
             self.assertNotIn(service_id, exposed)
 
     def test_clear_service_parses_as_0x14_not_0x0e(self):
-        script = parse_script_xml(fixture_text("vida_script_clear_dtc.xml"))
+        script = parse_script_xml(fixture_text("script_plan_clear_dtc.xml"))
 
         self.assertIn(0x14, script.ecus[0].service_ids)
         self.assertNotIn(0x0E, script.ecus[0].service_ids)

@@ -30,14 +30,14 @@ from .protocol import (
     parse_dtc_response,
 )
 from .tui import run_tui
-from .vida_catalog import (
-    SCHEMA_NAME as VIDA_CATALOG_SCHEMA,
-    SCHEMA_VERSION as VIDA_CATALOG_VERSION,
+from .diag_catalog import (
+    SCHEMA_NAME as DIAG_CATALOG_SCHEMA,
+    SCHEMA_VERSION as DIAG_CATALOG_VERSION,
     CatalogError,
     load_catalog,
     normalize_dtc_code,
 )
-from .vida_runner import (
+from .script_runner import (
     STATUS_ERROR,
     STATUS_PLANNED,
     STATUS_RESPONSE,
@@ -48,8 +48,8 @@ from .vida_runner import (
     parse_address_map,
     run_plan,
 )
-from .vida_script import (
-    VidaScriptError,
+from .script_plan import (
+    DiagnosticScriptError,
     classify_service,
     is_read_only_service,
     parse_script_xml,
@@ -304,12 +304,12 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
         report["error"] = str(exc)
     finally:
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
-        catalog_path = getattr(args, "vida_catalog", None)
+        catalog_path = getattr(args, "diag_catalog", None)
         if catalog_path:
             try:
-                report["vida"] = _vida_report_section(report, catalog_path)
+                report["diagnostics"] = _diag_report_section(report, catalog_path)
             except (ValueError, OSError) as exc:
-                report["vida_error"] = str(exc)
+                report["diagnostics_error"] = str(exc)
         save()
     if args.save_profile and scan_completed and report["status"] not in ("error", "interrupted"):
         responded = {m["request_id"] for m in report["modules"]
@@ -341,15 +341,15 @@ def cmd_extract_dice_installer(args: argparse.Namespace) -> int:
     return 0
 
 
-# VIDA read-only commands ---------------------------------------------------
+# Diagnostic data read-only commands ---------------------------------------------------
 #
 # These commands only read files that are already on disk. They do not open a
-# CAN channel, contact a vehicle, execute a VIDA script, or write to the VIDA
+# CAN channel, contact a vehicle, execute a diagnostic script, or write to the source image
 # image. The catalog and script modules own the parsing rules; this layer keeps
 # the text output and the JSON envelope stable.
 
 
-def _load_vida_catalog(path: Path):
+def _load_diag_catalog(path: Path):
     if not path.exists():
         raise ValueError(f"catalog not found: {path}")
     if not path.is_file():
@@ -413,19 +413,19 @@ def _parse_vehicle_profile(value):
     return _load_json_object(path, "vehicle profile")
 
 
-def _vida_report_section(scan, catalog_path) -> dict:
-    """Build the optional VIDA section attached to a live scan report."""
-    catalog = _load_vida_catalog(Path(catalog_path))
+def _diag_report_section(scan, catalog_path) -> dict:
+    """Build the optional diagnostic section attached to a live scan report."""
+    catalog = _load_diag_catalog(Path(catalog_path))
     return build_report(scan, _catalog_report_mapping(catalog)).to_dict(
         include_raw=False
     )
 
 
 def _catalog_report_mapping(catalog) -> dict:
-    """Translate a VIDA catalog into the shape diagnostics.build_report reads.
+    """Translate a service catalog into the shape diagnostics.build_report reads.
 
     Entries with an ECU label are scoped to that module. A seven-character
-    VIDA code carries the two-digit failure type after the five-character DTC,
+    DTC code carries the two-digit failure type after the five-character DTC,
     so the same text is also registered under the ``CODE-XX`` key that the
     diagnostic view looks up. No text is generated here; an ambiguous key is
     dropped instead of picking one of the catalog's rows.
@@ -487,8 +487,8 @@ def _catalog_source_dict(source) -> dict:
 def _catalog_summary(catalog, path: Path) -> dict:
     return {
         "path": str(path),
-        "schema": VIDA_CATALOG_SCHEMA,
-        "version": VIDA_CATALOG_VERSION,
+        "schema": DIAG_CATALOG_SCHEMA,
+        "version": DIAG_CATALOG_VERSION,
         "source": _catalog_source_dict(catalog.source),
         "counts": {
             "dtc_descriptions": len(catalog.dtc_descriptions),
@@ -515,7 +515,7 @@ def _dtc_description_dict(entry) -> dict:
 def _print_catalog(catalog, path: Path) -> None:
     source = catalog.source
     print(f"Catalog: {path}")
-    print(f"Schema: {VIDA_CATALOG_SCHEMA} version {VIDA_CATALOG_VERSION}")
+    print(f"Schema: {DIAG_CATALOG_SCHEMA} version {DIAG_CATALOG_VERSION}")
     print(f"Source kind: {source.kind}")
     if source.generated_at:
         print(f"Generated: {source.generated_at}")
@@ -560,9 +560,9 @@ def _print_catalog_lookup(entry, code: str) -> None:
         print(f"  Source: {entry.source}")
 
 
-def cmd_vida_catalog(args: argparse.Namespace) -> int:
+def cmd_diag_catalog(args: argparse.Namespace) -> int:
     path = Path(args.catalog)
-    catalog = _load_vida_catalog(path)
+    catalog = _load_diag_catalog(path)
 
     normalized = None
     entry = None
@@ -764,10 +764,10 @@ def _report_payload(report, view: str) -> dict:
     return payload
 
 
-def cmd_vida_report(args: argparse.Namespace) -> int:
+def cmd_diag_report(args: argparse.Namespace) -> int:
     path = Path(args.scan)
     scan = _load_json_object(path, "scan report")
-    catalog = _load_vida_catalog(Path(args.catalog)) if args.catalog else None
+    catalog = _load_diag_catalog(Path(args.catalog)) if args.catalog else None
     vehicle = _parse_vehicle_profile(args.vehicle)
     catalog_mapping = _catalog_report_mapping(catalog) if catalog else None
     try:
@@ -953,13 +953,13 @@ def _print_script(script, path: Path) -> None:
     print("Execution: none. This command only parses the script.")
 
 
-def _load_vida_script(path: Path):
+def _load_script_plan(path: Path):
     data = _read_file(path, "script")
     try:
         if zipfile.is_zipfile(io.BytesIO(data)):
             return parse_script_zip(data)
         return parse_script_xml(_decode_script_text(data, path))
-    except VidaScriptError as exc:
+    except DiagnosticScriptError as exc:
         raise ValueError(f"cannot parse script {path}: {exc}") from exc
 
 
@@ -1145,9 +1145,9 @@ def _execute_run_plan(plan: RunPlan, timeout: float) -> RunResult:
         raise ValueError(f"DiCE run failed: {exc}") from exc
 
 
-def cmd_vida_run_script(args: argparse.Namespace) -> int:
+def cmd_diag_run_script(args: argparse.Namespace) -> int:
     script_path = Path(args.script)
-    script = _load_vida_script(script_path)
+    script = _load_script_plan(script_path)
     map_path = Path(args.address_map)
     address_map = _load_address_map(map_path)
     if not math.isfinite(args.timeout) or args.timeout <= 0:
@@ -1194,9 +1194,9 @@ def cmd_vida_run_script(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_vida_script(args: argparse.Namespace) -> int:
+def cmd_script_plan(args: argparse.Namespace) -> int:
     path = Path(args.script)
-    script = _load_vida_script(path)
+    script = _load_script_plan(path)
 
     if args.json:
         print(
@@ -1360,7 +1360,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--save-profile", type=Path, help="save responding targets to a new reusable profile")
     scan.add_argument("--replace-profile", action="store_true", help="replace an existing saved profile after discovery")
     scan.add_argument("--all-records", action="store_true", help="also display monitors with no fault bits; JSON always includes every record")
-    scan.add_argument("--vida-catalog", type=Path, help="optional VIDA catalog JSON; adds a VIDA fault-trace section")
+    scan.add_argument("--diag-catalog", type=Path, help="optional diagnostic catalog JSON; adds a fault-trace section")
     scan.set_defaults(func=cmd_dice_scan)
 
     probe_dice_raw = subparsers.add_parser("probe-dice-raw", help="detect DiCE through PyUSB/libusb")
@@ -1376,74 +1376,74 @@ def build_parser() -> argparse.ArgumentParser:
     extract_dice.add_argument("--no-unpack", action="store_true", help="only recover MSI files")
     extract_dice.set_defaults(func=cmd_extract_dice_installer)
 
-    vida_catalog = subparsers.add_parser(
-        "vida-catalog", help="inspect a VIDA catalog JSON export"
+    diag_catalog = subparsers.add_parser(
+        "diag-catalog", help="inspect a service catalog JSON export"
     )
-    vida_catalog.add_argument(
+    diag_catalog.add_argument(
         "--catalog", type=Path, required=True, help="catalog JSON file"
     )
-    vida_catalog.add_argument(
+    diag_catalog.add_argument(
         "--code", help="DTC code to look up, for example P034211"
     )
-    vida_catalog.add_argument("--json", action="store_true", help="print stable JSON")
-    vida_catalog.set_defaults(func=cmd_vida_catalog)
+    diag_catalog.add_argument("--json", action="store_true", help="print stable JSON")
+    diag_catalog.set_defaults(func=cmd_diag_catalog)
 
-    vida_report = subparsers.add_parser(
-        "vida-report", help="build read-only VIDA views from a saved scan report"
+    diag_report = subparsers.add_parser(
+        "diag-report", help="build read-only diagnostic views from a saved scan report"
     )
-    vida_report.add_argument(
+    diag_report.add_argument(
         "--scan", type=Path, required=True, help="saved dice-scan JSON report"
     )
-    vida_report.add_argument(
-        "--catalog", type=Path, help="optional VIDA catalog JSON for DTC descriptions"
+    diag_report.add_argument(
+        "--catalog", type=Path, help="optional service catalog JSON for DTC descriptions"
     )
-    vida_report.add_argument(
+    diag_report.add_argument(
         "--vehicle", metavar="JSON", help="inline vehicle profile JSON or a JSON file"
     )
-    vida_report.add_argument(
+    diag_report.add_argument(
         "--view",
         choices=("all", "network", "faults", "dtcs"),
         default="all",
         help="section to print, default all",
     )
-    vida_report.add_argument("--json", action="store_true", help="print stable JSON")
-    vida_report.set_defaults(func=cmd_vida_report)
+    diag_report.add_argument("--json", action="store_true", help="print stable JSON")
+    diag_report.set_defaults(func=cmd_diag_report)
 
-    vida_script = subparsers.add_parser(
-        "vida-script", help="parse a VIDA script ZIP or XML without executing it"
+    script_plan = subparsers.add_parser(
+        "diag-script", help="parse a diagnostic script ZIP or XML without executing it"
     )
-    vida_script.add_argument(
-        "--script", type=Path, required=True, help="VIDA script ZIP or XML file"
+    script_plan.add_argument(
+        "--script", type=Path, required=True, help="diagnostic script ZIP or XML file"
     )
-    vida_script.add_argument("--json", action="store_true", help="print stable JSON")
-    vida_script.set_defaults(func=cmd_vida_script)
+    script_plan.add_argument("--json", action="store_true", help="print stable JSON")
+    script_plan.set_defaults(func=cmd_script_plan)
 
-    vida_run = subparsers.add_parser(
-        "vida-run-script",
-        help="plan or run the read-only requests of a VIDA script",
+    diag_run = subparsers.add_parser(
+        "diag-run-script",
+        help="plan or run the read-only requests of a diagnostic script",
     )
-    vida_run.add_argument(
-        "--script", type=Path, required=True, help="VIDA script ZIP or XML file"
+    diag_run.add_argument(
+        "--script", type=Path, required=True, help="diagnostic script ZIP or XML file"
     )
-    vida_run.add_argument(
+    diag_run.add_argument(
         "--address-map",
         type=Path,
         required=True,
         help="JSON map of logical ECU addresses to 11-bit physical CAN request IDs",
     )
-    vida_run.add_argument(
+    diag_run.add_argument(
         "--execute",
         action="store_true",
         help="send the planned reads through the native DiCE transport",
     )
-    vida_run.add_argument(
+    diag_run.add_argument(
         "--timeout",
         type=float,
         default=1.5,
         help="response window per request in seconds, default 1.5",
     )
-    vida_run.add_argument("--json", action="store_true", help="print stable JSON")
-    vida_run.set_defaults(func=cmd_vida_run_script)
+    diag_run.add_argument("--json", action="store_true", help="print stable JSON")
+    diag_run.set_defaults(func=cmd_diag_run_script)
 
     readout = subparsers.add_parser("readout", help="passively print CAN frames")
     add_bus_args(readout)

@@ -1,6 +1,6 @@
-"""Parse VIDA diagnostic scripts into a read-only plan.
+"""Parse diagnostic scripts into a read-only plan.
 
-A VIDA script is a single-entry ZIP archive whose entry is an XML document
+A diagnostic script is a single-entry ZIP archive whose entry is an XML document
 rooted at ``script``. The archive reaches the client as
 ``ScriptContent.XmlDataCompressed``; the entry name is a document id, not a
 file name, so it is not used to select the body.
@@ -70,7 +70,7 @@ _PATH_ATTRIBUTES = (
 )
 
 
-class VidaScriptError(ValueError):
+class DiagnosticScriptError(ValueError):
     """Raised when a script archive or document cannot be parsed."""
 
 
@@ -97,7 +97,7 @@ class DtcPlan:
     """Paths the script binds to a DTC list.
 
     ``raw_nodes`` keeps the matched XML snippets so a caller can inspect the
-    original binding without re-parsing ``VidaScript.raw_xml``.
+    original binding without re-parsing ``DiagnosticScript.raw_xml``.
     """
 
     list_path: Optional[str]
@@ -126,8 +126,8 @@ class ReadRequest:
 
 
 @dataclass(frozen=True)
-class VidaScript:
-    """The addressing and DTC-list view of one VIDA script document."""
+class DiagnosticScript:
+    """The addressing and DTC-list view of one diagnostic script document."""
 
     docno: Optional[str]
     title: Optional[str]
@@ -186,8 +186,8 @@ def is_read_only_service(service_id: int) -> bool:
     return service_id in READ_ONLY_SERVICES
 
 
-def parse_script_zip(data: bytes) -> VidaScript:
-    """Parse a single-entry ZIP archive holding one VIDA XML script."""
+def parse_script_zip(data: bytes) -> DiagnosticScript:
+    """Parse a single-entry ZIP archive holding one diagnostic XML script."""
 
     if not isinstance(data, (bytes, bytearray, memoryview)):
         raise TypeError("script archive must be bytes")
@@ -195,22 +195,22 @@ def parse_script_zip(data: bytes) -> VidaScript:
     try:
         archive = zipfile.ZipFile(io.BytesIO(payload))
     except zipfile.BadZipFile as exc:
-        raise VidaScriptError("not a valid ZIP archive: {}".format(exc)) from exc
+        raise DiagnosticScriptError("not a valid ZIP archive: {}".format(exc)) from exc
 
     with archive:
         entries = [info for info in archive.infolist() if not info.is_dir()]
         if not entries:
-            raise VidaScriptError("script archive contains no file entries")
+            raise DiagnosticScriptError("script archive contains no file entries")
         if len(entries) > 1:
             names = ", ".join(info.filename for info in entries)
-            raise VidaScriptError(
+            raise DiagnosticScriptError(
                 "script archive must contain exactly one entry, found {}: {}".format(
                     len(entries), names
                 )
             )
         entry = entries[0]
         if entry.file_size > MAX_SCRIPT_BYTES:
-            raise VidaScriptError(
+            raise DiagnosticScriptError(
                 "script entry {!r} is larger than {} bytes".format(
                     entry.filename, MAX_SCRIPT_BYTES
                 )
@@ -225,12 +225,12 @@ def parse_script_zip(data: bytes) -> VidaScript:
             EOFError,
             zlib.error,
         ) as exc:
-            raise VidaScriptError(
+            raise DiagnosticScriptError(
                 "cannot read script entry {!r}: {}".format(entry.filename, exc)
             ) from exc
 
     if len(body) > MAX_SCRIPT_BYTES:
-        raise VidaScriptError(
+        raise DiagnosticScriptError(
             "script entry {!r} is larger than {} bytes".format(
                 entry.filename, MAX_SCRIPT_BYTES
             )
@@ -239,34 +239,34 @@ def parse_script_zip(data: bytes) -> VidaScript:
     text = _decode_script(body, entry.filename)
     try:
         return parse_script_xml(text)
-    except VidaScriptError as exc:
-        raise VidaScriptError(
+    except DiagnosticScriptError as exc:
+        raise DiagnosticScriptError(
             "script entry {!r}: {}".format(entry.filename, exc)
         ) from exc
 
 
-def parse_script_xml(text: str) -> VidaScript:
-    """Parse an uncompressed VIDA script document."""
+def parse_script_xml(text: str) -> DiagnosticScript:
+    """Parse an uncompressed diagnostic script document."""
 
     if not isinstance(text, str):
         raise TypeError("script XML must be str")
     if not text.strip():
-        raise VidaScriptError("missing root element: script document is empty")
+        raise DiagnosticScriptError("missing root element: script document is empty")
     if _ELEMENT_START_RE.search(text) is None:
-        raise VidaScriptError("missing root element: no XML element found")
+        raise DiagnosticScriptError("missing root element: no XML element found")
 
     try:
         root = ElementTree.fromstring(text)
     except ElementTree.ParseError as exc:
-        raise VidaScriptError("malformed XML: {}".format(exc)) from exc
+        raise DiagnosticScriptError("malformed XML: {}".format(exc)) from exc
 
     root_name = _local_name(root.tag)
     if root_name != "script":
-        raise VidaScriptError(
+        raise DiagnosticScriptError(
             "missing <script> root element, found <{}>".format(root_name)
         )
 
-    return VidaScript(
+    return DiagnosticScript(
         docno=_attribute(root, "docno"),
         title=_title(root),
         variant_id=_attribute(root, "VariantId"),
@@ -512,6 +512,6 @@ def _decode_script(data: bytes, source: str) -> str:
     try:
         return data.decode(encoding)
     except (LookupError, UnicodeDecodeError) as exc:
-        raise VidaScriptError(
+        raise DiagnosticScriptError(
             "script entry {!r} is not valid {}: {}".format(source, encoding, exc)
         ) from exc

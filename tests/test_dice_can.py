@@ -196,7 +196,7 @@ class DiceCanSendTests(unittest.TestCase):
         with self.assertRaisesRegex(DiceProtocolError, "transmit failed"):
             transport.send(request)
 
-    def test_vida_read_services_are_opt_in(self):
+    def test_diag_read_services_are_opt_in(self):
         request = VolvoFrame(
             0x7E0, bytes.fromhex("03 22 F1 90 00 00 00 00"), False
         )
@@ -208,15 +208,15 @@ class DiceCanSendTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             default.send(request)
 
-        vida_rpc = FakeRpc(read_packets=[tx_ack()])
-        vida = DiceCanTransport(
-            vida_rpc, uds_requests=[0x7E0], allow_read_services=True
+        diag_rpc = FakeRpc(read_packets=[tx_ack()])
+        diag = DiceCanTransport(
+            diag_rpc, uds_requests=[0x7E0], allow_read_services=True
         )
-        vida.channel_id = 1
-        vida.started = True
-        vida.send(request)
+        diag.channel_id = 1
+        diag.started = True
+        diag.send(request)
 
-    def test_vida_read_flag_rejects_write_services(self):
+    def test_diag_read_flag_rejects_write_services(self):
         transport = DiceCanTransport(
             FakeRpc(read_packets=[tx_ack()]),
             uds_requests=[0x7E0],

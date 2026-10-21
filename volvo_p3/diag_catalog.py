@@ -1,6 +1,6 @@
-"""Runtime catalog of VIDA diagnostic data.
+"""Runtime catalog of diagnostic data.
 
-VIDA keeps DTC text, request timing and vehicle profiles in separate SQL
+The source keeps DTC text, request timing and vehicle profiles in separate SQL
 Server databases. This module loads a small, versioned JSON export of the
 parts a diagnostic client can use, and answers the three questions PyDiCE
 asks at runtime:
@@ -14,10 +14,10 @@ The catalog file is JSON only. It has five sections:
 .. code-block:: json
 
     {
-      "schema": "pydice.vida_catalog",
+      "schema": "pydice.diag_catalog",
       "version": 1,
       "source": {
-        "kind": "vida-mdf",
+        "kind": "source-mdf",
         "generated_at": "2026-10-21T12:00:00Z",
         "image": "/mnt/vida",
         "databases": [
@@ -67,8 +67,8 @@ and the caller did not narrow them by ECU, the lookup returns ``None`` rather
 than choosing one. A missing code always returns ``None``; the loader never
 synthesises text.
 
-The exporter in ``tools/export_vida_catalog.py`` builds this document from the
-VIDA image, or transforms an existing JSON document with ``--from-json``.
+The exporter in ``tools/export_diag_catalog.py`` builds this document from the
+source image, or transforms an existing JSON document with ``--from-json``.
 """
 
 from __future__ import annotations
@@ -79,7 +79,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 
-SCHEMA_NAME = "pydice.vida_catalog"
+SCHEMA_NAME = "pydice.diag_catalog"
 SCHEMA_VERSION = 1
 
 _HEX_DIGITS = frozenset("0123456789ABCDEF")
@@ -114,9 +114,9 @@ class CatalogSource:
 
 @dataclass(frozen=True)
 class DtcDescription:
-    """A VIDA-style DTC description.
+    """A service-style DTC description.
 
-    ``ecu`` is a free-form ECU label. VIDA calls some of these ``ECM`` or
+    ``ecu`` is a free-form ECU label. the source calls some of these ``ECM`` or
     ``TCM``; the exporter may also use a vendor-specific label. ``None`` means
     the description is not ECU-specific.
     """
@@ -140,7 +140,7 @@ class DtcDescription:
 class TimingEntry:
     """Request timing for one ECU variant and request prefix.
 
-    ``request`` is the first one to three request bytes. The VIDA procedures
+    ``request`` is the first one to three request bytes. The the source procedures
     narrow from three bytes to one, so a lookup with three bytes also matches
     a stored one-byte or two-byte prefix.
     """
@@ -159,7 +159,7 @@ class TimingEntry:
 
 @dataclass(frozen=True)
 class VehicleProfile:
-    """One VIDA vehicle profile, as exported from BaseData."""
+    """One vehicle profile, as exported from BaseData."""
 
     id: str
     title: Optional[str] = None
@@ -173,7 +173,7 @@ class VehicleProfile:
 
 @dataclass(frozen=True)
 class ScriptEntry:
-    """One VIDA diagnostic script, when the exporter can recover it."""
+    """One diagnostic script, when the exporter can recover it."""
 
     id: str
     name: Optional[str] = None
@@ -187,8 +187,8 @@ class ScriptEntry:
 
 
 @dataclass(frozen=True)
-class VidaCatalog:
-    """A loaded VIDA catalog with lookup indexes built at construction."""
+class DiagnosticCatalog:
+    """A loaded service catalog with lookup indexes built at construction."""
 
     source: CatalogSource
     dtc_descriptions: Tuple[DtcDescription, ...] = ()
@@ -246,7 +246,7 @@ class VidaCatalog:
     def describe_dtc(
         self, code: str, ecu: Optional[str] = None
     ) -> Optional[DtcDescription]:
-        """Return the full VIDA-style record for ``code``.
+        """Return the full service-style record for ``code``.
 
         This is the same record as :meth:`lookup_dtc`, exposed under the name
         a UI is more likely to call. ``long_text``, ``short_text``,
@@ -277,7 +277,7 @@ class VidaCatalog:
         """Return timing for an ECU variant and request prefix.
 
         ``request_bytes`` can be a byte string, a hex string such as
-        ``"AE1B"``, a single integer or a sequence of integers. VIDA passes the
+        ``"AE1B"``, a single integer or a sequence of integers. the caller passes the
         bytes it knows and leaves the rest as SQL ``NULL``, so a one- or
         two-byte lookup matches every stored request with that prefix. An
         exact-length match wins. If the matching rows disagree on timing, the
@@ -398,7 +398,7 @@ def normalize_request_bytes(
     return raw
 
 
-def load_catalog(path: Union[str, os.PathLike[str]]) -> VidaCatalog:
+def load_catalog(path: Union[str, os.PathLike[str]]) -> DiagnosticCatalog:
     """Load and validate a catalog JSON file.
 
     ``CatalogError`` wraps JSON syntax errors and every schema violation.
@@ -419,8 +419,8 @@ def load_catalog(path: Union[str, os.PathLike[str]]) -> VidaCatalog:
     return catalog_from_dict(document)
 
 
-def catalog_from_dict(document: Mapping[str, Any]) -> VidaCatalog:
-    """Validate a catalog mapping and return a :class:`VidaCatalog`."""
+def catalog_from_dict(document: Mapping[str, Any]) -> DiagnosticCatalog:
+    """Validate a catalog mapping and return a :class:`DiagnosticCatalog`."""
 
     root = _require_mapping(document, "catalog")
     if root.get("schema") != SCHEMA_NAME:
@@ -463,7 +463,7 @@ def catalog_from_dict(document: Mapping[str, Any]) -> VidaCatalog:
         )
     )
 
-    return VidaCatalog(
+    return DiagnosticCatalog(
         source=source,
         dtc_descriptions=dtc_descriptions,
         timing=timing,
@@ -472,7 +472,7 @@ def catalog_from_dict(document: Mapping[str, Any]) -> VidaCatalog:
     )
 
 
-def catalog_to_dict(catalog: VidaCatalog) -> Dict[str, Any]:
+def catalog_to_dict(catalog: DiagnosticCatalog) -> Dict[str, Any]:
     """Serialize a catalog back to the versioned JSON shape."""
 
     return {
@@ -545,7 +545,7 @@ def catalog_to_dict(catalog: VidaCatalog) -> Dict[str, Any]:
     }
 
 
-def dump_catalog(catalog: VidaCatalog, path: Union[str, os.PathLike[str]]) -> None:
+def dump_catalog(catalog: DiagnosticCatalog, path: Union[str, os.PathLike[str]]) -> None:
     """Write a catalog as UTF-8 JSON with a trailing newline."""
 
     with open(path, "w", encoding="utf-8") as handle:
@@ -877,7 +877,7 @@ __all__ = [
     "ScriptEntry",
     "TimingEntry",
     "VehicleProfile",
-    "VidaCatalog",
+    "DiagnosticCatalog",
     "catalog_from_dict",
     "catalog_to_dict",
     "dump_catalog",

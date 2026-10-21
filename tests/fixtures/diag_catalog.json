@@ -1,5 +1,5 @@
 {
-  "schema": "pydice.vida_catalog",
+  "schema": "pydice.diag_catalog",
   "version": 1,
   "source": {
     "kind": "synthetic",
@@ -12,11 +12,11 @@
         "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       }
     ],
-    "extractor": "tests/fixtures/vida_catalog.json",
+    "extractor": "tests/fixtures/diag_catalog.json",
     "language": "en-US",
     "notes": [
       "Synthetic fixture for the catalog loader and lookup tests.",
-      "No VIDA rows, VINs or personal data are present."
+      "No source rows, VINs or personal data are present."
     ]
   },
   "dtc_descriptions": [

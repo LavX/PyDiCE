@@ -34,10 +34,10 @@ if __package__ in (None, ""):
         is_response_to,
         parse_dtc_response,
     )
-    from volvo_p3.vida_catalog import CatalogError, VidaCatalog, load_catalog
-    from volvo_p3.vida_script import (
-        VidaScript,
-        VidaScriptError,
+    from volvo_p3.diag_catalog import CatalogError, DiagnosticCatalog, load_catalog
+    from volvo_p3.script_plan import (
+        DiagnosticScript,
+        DiagnosticScriptError,
         classify_service,
         parse_script_xml,
         parse_script_zip,
@@ -59,10 +59,10 @@ else:
         is_response_to,
         parse_dtc_response,
     )
-    from .vida_catalog import CatalogError, VidaCatalog, load_catalog
-    from .vida_script import (
-        VidaScript,
-        VidaScriptError,
+    from .diag_catalog import CatalogError, DiagnosticCatalog, load_catalog
+    from .script_plan import (
+        DiagnosticScript,
+        DiagnosticScriptError,
         classify_service,
         parse_script_xml,
         parse_script_zip,
@@ -110,33 +110,33 @@ def _parse_ecu_list(text: str) -> list[int]:
     return [parse_ecu(piece) for piece in values if piece]
 
 
-# VIDA views -------------------------------------------------------------
+# Diagnostic data views -------------------------------------------------------------
 
-DEFAULT_VIDA_CATALOG = "reports/vida_catalog.json"
-DEFAULT_VIDA_SCAN = "reports/my-car-complete.json"
+DEFAULT_DIAG_CATALOG = "reports/diag_catalog.json"
+DEFAULT_DIAG_SCAN = "reports/my-car-complete.json"
 
 
-def default_vida_catalog_path() -> str:
+def default_diag_catalog_path() -> str:
     """Return the conventional catalog path, or blank when it is absent."""
 
-    return DEFAULT_VIDA_CATALOG if Path(DEFAULT_VIDA_CATALOG).is_file() else ""
+    return DEFAULT_DIAG_CATALOG if Path(DEFAULT_DIAG_CATALOG).is_file() else ""
 
 
-def default_vida_scan_path() -> str:
+def default_diag_scan_path() -> str:
     """Return the conventional saved scan path."""
 
-    return DEFAULT_VIDA_SCAN
+    return DEFAULT_DIAG_SCAN
 
 
-def vida_catalog_mapping(catalog: VidaCatalog) -> dict[str, Any]:
+def diag_catalog_mapping(catalog: DiagnosticCatalog) -> dict[str, Any]:
     """Flatten a loaded catalog into the mapping shape diagnostics accepts.
 
     Only text the catalog actually carries is copied. A code whose entries
     disagree is left out so no caller has to choose a description.
     """
 
-    if not isinstance(catalog, VidaCatalog):
-        raise TypeError("catalog must be a VidaCatalog")
+    if not isinstance(catalog, DiagnosticCatalog):
+        raise TypeError("catalog must be a DiagnosticCatalog")
 
     global_texts: dict[str, set[str]] = {}
     module_texts: dict[str, dict[str, set[str]]] = {}
@@ -169,7 +169,7 @@ def vida_catalog_mapping(catalog: VidaCatalog) -> dict[str, Any]:
     return mapping
 
 
-def build_vida_report(
+def build_diag_report(
     scan_path: str | os.PathLike[str],
     catalog_path: str | os.PathLike[str] | None = None,
     vehicle: Mapping[str, Any] | None = None,
@@ -179,7 +179,7 @@ def build_vida_report(
     Missing files raise ``FileNotFoundError`` and malformed input raises
     ``ValueError`` (``CatalogError`` included). The TUI renders those as an
     error line; callers that want that behaviour should use one of the
-    ``vida_*_lines`` wrappers below.
+    ``diag_*_lines`` wrappers below.
     """
 
     report_text = str(scan_path).strip()
@@ -209,35 +209,35 @@ def build_vida_report(
         catalog_file = Path(catalog_text)
         if not catalog_file.is_file():
             raise FileNotFoundError("catalog not found: {}".format(catalog_file))
-        catalog_mapping = vida_catalog_mapping(load_catalog(catalog_file))
+        catalog_mapping = diag_catalog_mapping(load_catalog(catalog_file))
 
     return build_diagnostic_report(scan, catalog=catalog_mapping, vehicle=vehicle)
 
 
-def _vida_hex(value: int | None, width: int = 2) -> str:
+def _diag_hex(value: int | None, width: int = 2) -> str:
     if value is None:
         return "-"
     return "0x{:0{}X}".format(value, width)
 
 
-def _vida_dtc_line(dtc: Any) -> str:
+def _diag_dtc_line(dtc: Any) -> str:
     line = "  {}  {}".format(dtc.code or "(no code)", dtc.classification)
     if dtc.description:
         line += "  " + dtc.description
     return line
 
 
-def _vida_report_title(report: DiagnosticReport) -> str:
+def _diag_report_title(report: DiagnosticReport) -> str:
     return report.name or "saved scan"
 
 
-def format_vida_dtc_lines(report: DiagnosticReport) -> list[str]:
+def format_diag_dtc_lines(report: DiagnosticReport) -> list[str]:
     """Format the module and DTC overview for one report."""
 
     if not isinstance(report, DiagnosticReport):
         raise TypeError("report must be a DiagnosticReport")
 
-    lines = ["VIDA DTC overview: {}".format(_vida_report_title(report))]
+    lines = ["Diagnostic DTC overview: {}".format(_diag_report_title(report))]
     vin = report.vehicle.get("vin") if isinstance(report.vehicle, Mapping) else None
     if isinstance(vin, str) and vin.strip():
         lines.append("vin: {}".format(vin.strip().upper()))
@@ -257,17 +257,17 @@ def format_vida_dtc_lines(report: DiagnosticReport) -> list[str]:
         lines.append(
             "{}  request={}  response={}  status={}  dtcs={}".format(
                 module.name or "(unnamed)",
-                _vida_hex(module.request_id, 3),
-                _vida_hex(module.response_id, 3),
+                _diag_hex(module.request_id, 3),
+                _diag_hex(module.response_id, 3),
                 module.status or "unknown",
                 module.dtc_count,
             )
         )
-        lines.extend(_vida_dtc_line(dtc) for dtc in module.dtcs)
+        lines.extend(_diag_dtc_line(dtc) for dtc in module.dtcs)
     return lines
 
 
-def format_vida_network_lines(report: DiagnosticReport) -> list[str]:
+def format_diag_network_lines(report: DiagnosticReport) -> list[str]:
     """Format the responder summary for one report."""
 
     if not isinstance(report, DiagnosticReport):
@@ -275,7 +275,7 @@ def format_vida_network_lines(report: DiagnosticReport) -> list[str]:
 
     network = compute_network_status(report)
     lines = [
-        "VIDA network status: {}".format(_vida_report_title(report)),
+        "Diagnostic network status: {}".format(_diag_report_title(report)),
         "total modules: {}".format(network.total_modules),
         "responders: {} ({:.0%})".format(
             network.responder_count, network.coverage_ratio
@@ -291,12 +291,12 @@ def format_vida_network_lines(report: DiagnosticReport) -> list[str]:
     return lines
 
 
-def format_vida_fault_lines(report: DiagnosticReport) -> list[str]:
+def format_diag_fault_lines(report: DiagnosticReport) -> list[str]:
     """Format DTCs grouped by module and fault state."""
 
     groups = build_fault_trace(report)
     lines = [
-        "VIDA fault trace: {}".format(_vida_report_title(report)),
+        "Diagnostic fault trace: {}".format(_diag_report_title(report)),
         "current faults: {} | groups: {}".format(
             report.current_fault_count, len(groups)
         ),
@@ -311,65 +311,65 @@ def format_vida_fault_lines(report: DiagnosticReport) -> list[str]:
                 group.module or "(unnamed)", group.status, group.count
             )
         )
-        lines.extend(_vida_dtc_line(dtc) for dtc in group.dtcs)
+        lines.extend(_diag_dtc_line(dtc) for dtc in group.dtcs)
     return lines
 
 
-def _safe_vida_report_lines(
+def _safe_diag_report_lines(
     scan_path: str | os.PathLike[str],
     catalog_path: str | os.PathLike[str] | None,
     vehicle: Mapping[str, Any] | None,
     formatter: Callable[[DiagnosticReport], list[str]],
 ) -> list[str]:
     try:
-        report = build_vida_report(scan_path, catalog_path, vehicle)
+        report = build_diag_report(scan_path, catalog_path, vehicle)
     except (OSError, ValueError, TypeError) as exc:
         return ["error: {}".format(exc)]
     return formatter(report)
 
 
-def vida_dtc_overview_lines(
+def diag_dtc_overview_lines(
     scan_path: str | os.PathLike[str],
     catalog_path: str | os.PathLike[str] | None = None,
     vehicle: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Return DTC overview lines, with a single error line on bad input."""
 
-    return _safe_vida_report_lines(
-        scan_path, catalog_path, vehicle, format_vida_dtc_lines
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_dtc_lines
     )
 
 
-def vida_network_status_lines(
+def diag_network_status_lines(
     scan_path: str | os.PathLike[str],
     catalog_path: str | os.PathLike[str] | None = None,
     vehicle: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Return network status lines, with a single error line on bad input."""
 
-    return _safe_vida_report_lines(
-        scan_path, catalog_path, vehicle, format_vida_network_lines
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_network_lines
     )
 
 
-def vida_fault_trace_lines(
+def diag_fault_trace_lines(
     scan_path: str | os.PathLike[str],
     catalog_path: str | os.PathLike[str] | None = None,
     vehicle: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Return fault trace lines, with a single error line on bad input."""
 
-    return _safe_vida_report_lines(
-        scan_path, catalog_path, vehicle, format_vida_fault_lines
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_fault_lines
     )
 
 
-def build_vida_catalog_view(path: str | os.PathLike[str]) -> list[str]:
+def build_diag_catalog_view(path: str | os.PathLike[str]) -> list[str]:
     """Load a catalog and describe its sections, or return an error line."""
 
     text = str(path).strip()
     if not text:
-        return ["error: enter a VIDA catalog JSON path"]
+        return ["error: enter a service catalog JSON path"]
     catalog_path = Path(text)
     if not catalog_path.is_file():
         return ["error: catalog not found: {}".format(catalog_path)]
@@ -401,7 +401,7 @@ def build_vida_catalog_view(path: str | os.PathLike[str]) -> list[str]:
     return lines
 
 
-def _parse_vida_script(data: bytes, suffix: str) -> VidaScript:
+def _parse_script_plan(data: bytes, suffix: str) -> DiagnosticScript:
     if suffix == ".zip" or data.startswith(b"PK\x03\x04"):
         return parse_script_zip(data)
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -411,7 +411,7 @@ def _parse_vida_script(data: bytes, suffix: str) -> VidaScript:
     return parse_script_xml(text)
 
 
-def _format_vida_script(script: VidaScript, path: Path) -> list[str]:
+def _format_script_plan(script: DiagnosticScript, path: Path) -> list[str]:
     lines = [
         "script: {}".format(path),
         "docno: {}".format(script.docno or "(none)"),
@@ -433,9 +433,9 @@ def _format_vida_script(script: VidaScript, path: Path) -> list[str]:
         ) or "(none)"
         lines.append(
             "  ecu={} type={} tester={} mode={} services={}".format(
-                _vida_hex(plan.ecu_address),
-                _vida_hex(plan.ecu_type, 1),
-                _vida_hex(plan.tester_address),
+                _diag_hex(plan.ecu_address),
+                _diag_hex(plan.ecu_type, 1),
+                _diag_hex(plan.tester_address),
                 plan.mode or "-",
                 services,
             )
@@ -450,7 +450,7 @@ def _format_vida_script(script: VidaScript, path: Path) -> list[str]:
     for request in requests:
         lines.append(
             "  ecu={} service=0x{:02X} {} request={}".format(
-                _vida_hex(request.ecu_address),
+                _diag_hex(request.ecu_address),
                 request.service_id,
                 request.service_name,
                 request.request or "-",
@@ -492,12 +492,12 @@ def _format_vida_script(script: VidaScript, path: Path) -> list[str]:
     return lines
 
 
-def build_vida_script_view(path: str | os.PathLike[str]) -> list[str]:
-    """Parse a VIDA script ZIP or XML into a plan, or return an error line."""
+def build_script_plan_view(path: str | os.PathLike[str]) -> list[str]:
+    """Parse a diagnostic script ZIP or XML into a plan, or return an error line."""
 
     text = str(path).strip()
     if not text:
-        return ["error: enter a VIDA script ZIP or XML path"]
+        return ["error: enter a diagnostic script ZIP or XML path"]
     script_path = Path(text)
     if not script_path.is_file():
         return ["error: script not found: {}".format(script_path)]
@@ -507,11 +507,11 @@ def build_vida_script_view(path: str | os.PathLike[str]) -> list[str]:
         return ["error: cannot read script {}: {}".format(script_path, exc)]
 
     try:
-        script = _parse_vida_script(data, script_path.suffix.lower())
-    except (OSError, ValueError, UnicodeDecodeError, VidaScriptError) as exc:
+        script = _parse_script_plan(data, script_path.suffix.lower())
+    except (OSError, ValueError, UnicodeDecodeError, DiagnosticScriptError) as exc:
         return ["error: {}".format(exc)]
 
-    return _format_vida_script(script, script_path)
+    return _format_script_plan(script, script_path)
 
 
 class VolvoTuiApp:
@@ -656,43 +656,43 @@ class VolvoTuiApp:
                 ),
             ),
             SectionSpec(
-                "VIDA",
+                "Service Data",
                 (
                     ActionSpec(
-                        "Load VIDA Catalog",
-                        "Load and validate a VIDA catalog JSON export.",
-                        self._vida_load_catalog,
-                        (FieldSpec("vida_catalog", "Catalog JSON", default_vida_catalog_path()),),
+                        "Load Catalog",
+                        "Load and validate a service catalog JSON export.",
+                        self._diag_load_catalog,
+                        (FieldSpec("diag_catalog", "Catalog JSON", default_diag_catalog_path()),),
                     ),
                     ActionSpec(
-                        "VIDA DTC Overview",
+                        "DTC Overview",
                         "List modules and DTCs from a saved scan report, with catalog descriptions when present.",
-                        self._vida_dtc_overview,
+                        self._diag_dtc_overview,
                         (
-                            FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),
-                            FieldSpec("vida_catalog", "Catalog JSON (optional)", default_vida_catalog_path()),
+                            FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),
+                            FieldSpec("diag_catalog", "Catalog JSON (optional)", default_diag_catalog_path()),
                         ),
                     ),
                     ActionSpec(
-                        "VIDA Fault Trace",
+                        "Fault Trace",
                         "Group saved DTCs by module and fault state.",
-                        self._vida_fault_trace,
+                        self._diag_fault_trace,
                         (
-                            FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),
-                            FieldSpec("vida_catalog", "Catalog JSON (optional)", default_vida_catalog_path()),
+                            FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),
+                            FieldSpec("diag_catalog", "Catalog JSON (optional)", default_diag_catalog_path()),
                         ),
                     ),
                     ActionSpec(
-                        "VIDA Network Status",
+                        "Network Status",
                         "Summarize responders, silence, and partial responses in a saved scan.",
-                        self._vida_network_status,
-                        (FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),),
+                        self._diag_network_status,
+                        (FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),),
                     ),
                     ActionSpec(
-                        "VIDA Script Plan",
-                        "Parse a VIDA script ZIP or XML into a read-only plan.",
-                        self._vida_script_plan,
-                        (FieldSpec("vida_script", "Script ZIP or XML", ""),),
+                        "Script Plan",
+                        "Parse a diagnostic script ZIP or XML into a read-only plan.",
+                        self._script_plan_plan,
+                        (FieldSpec("script_plan", "Script ZIP or XML", ""),),
                     ),
                 ),
             ),
@@ -1112,34 +1112,34 @@ class VolvoTuiApp:
         finally:
             bus.close()
 
-    def _vida_vehicle(self) -> dict[str, str] | None:
+    def _diag_vehicle(self) -> dict[str, str] | None:
         return {"vin": self.vehicle.vin} if self.vehicle.vin else None
 
-    def _vida_load_catalog(self, values: dict[str, str]) -> list[str]:
-        return build_vida_catalog_view(values.get("vida_catalog", ""))
+    def _diag_load_catalog(self, values: dict[str, str]) -> list[str]:
+        return build_diag_catalog_view(values.get("diag_catalog", ""))
 
-    def _vida_dtc_overview(self, values: dict[str, str]) -> list[str]:
-        return vida_dtc_overview_lines(
-            values.get("vida_scan", ""),
-            values.get("vida_catalog", ""),
-            self._vida_vehicle(),
+    def _diag_dtc_overview(self, values: dict[str, str]) -> list[str]:
+        return diag_dtc_overview_lines(
+            values.get("diag_scan", ""),
+            values.get("diag_catalog", ""),
+            self._diag_vehicle(),
         )
 
-    def _vida_fault_trace(self, values: dict[str, str]) -> list[str]:
-        return vida_fault_trace_lines(
-            values.get("vida_scan", ""),
-            values.get("vida_catalog", ""),
-            self._vida_vehicle(),
+    def _diag_fault_trace(self, values: dict[str, str]) -> list[str]:
+        return diag_fault_trace_lines(
+            values.get("diag_scan", ""),
+            values.get("diag_catalog", ""),
+            self._diag_vehicle(),
         )
 
-    def _vida_network_status(self, values: dict[str, str]) -> list[str]:
-        return vida_network_status_lines(
-            values.get("vida_scan", ""),
-            vehicle=self._vida_vehicle(),
+    def _diag_network_status(self, values: dict[str, str]) -> list[str]:
+        return diag_network_status_lines(
+            values.get("diag_scan", ""),
+            vehicle=self._diag_vehicle(),
         )
 
-    def _vida_script_plan(self, values: dict[str, str]) -> list[str]:
-        return build_vida_script_view(values.get("vida_script", ""))
+    def _script_plan_plan(self, values: dict[str, str]) -> list[str]:
+        return build_script_plan_view(values.get("script_plan", ""))
 
     def _draw(self, stdscr: curses.window) -> None:
         stdscr.erase()

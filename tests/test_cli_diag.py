@@ -1,4 +1,4 @@
-"""Tests for the read-only VIDA commands in ``volvo_p3.cli``."""
+"""Tests for the read-only diagnostic data commands in ``volvo_p3.cli``."""
 
 import io
 import json
@@ -7,20 +7,20 @@ from argparse import Namespace
 from pathlib import Path
 
 from volvo_p3.cli import (
-    _vida_report_section,
+    _diag_report_section,
     build_parser,
-    cmd_vida_catalog,
-    cmd_vida_report,
-    cmd_vida_script,
+    cmd_diag_catalog,
+    cmd_diag_report,
+    cmd_script_plan,
     main,
 )
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
-CATALOG = FIXTURES / "vida_catalog.json"
-SCRIPT_XML = FIXTURES / "vida_script_read_dtc.xml"
-SCRIPT_CLEAR = FIXTURES / "vida_script_clear_dtc.xml"
-SCRIPT_MALFORMED = FIXTURES / "vida_script_malformed.xml"
+CATALOG = FIXTURES / "diag_catalog.json"
+SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
+SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
+SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
 SCAN_PROFILE = FIXTURES / "my-car-complete.json"
 
 
@@ -37,9 +37,9 @@ def dtc_record(code, status_byte, failure_type):
     }
 
 
-def test_vida_report_section_for_live_scan_shape():
+def test_diag_report_section_for_live_scan_shape():
     scan = json.loads(SCAN_PROFILE.read_text(encoding="utf-8"))
-    section = _vida_report_section(scan, CATALOG)
+    section = _diag_report_section(scan, CATALOG)
 
     assert section["counts"]["modules"] == 18
     assert section["counts"]["dtcs"] == 0
@@ -101,15 +101,15 @@ def script_args(script, **overrides):
     return Namespace(**values)
 
 
-# vida-catalog -------------------------------------------------------------
+# diag-catalog -------------------------------------------------------------
 
 
 def test_catalog_human_shows_source_and_counts(capsys):
-    status = cmd_vida_catalog(catalog_args())
+    status = cmd_diag_catalog(catalog_args())
 
     out = capsys.readouterr().out
     assert status == 0
-    assert "Schema: pydice.vida_catalog version 1" in out
+    assert "Schema: pydice.diag_catalog version 1" in out
     assert "Source kind: synthetic" in out
     assert "Language: en-US" in out
     assert "Databases: 1" in out
@@ -121,7 +121,7 @@ def test_catalog_human_shows_source_and_counts(capsys):
 
 
 def test_catalog_code_lookup_prints_catalog_text(capsys):
-    status = cmd_vida_catalog(catalog_args(code="P034211"))
+    status = cmd_diag_catalog(catalog_args(code="P034211"))
 
     out = capsys.readouterr().out
     assert status == 0
@@ -133,12 +133,12 @@ def test_catalog_code_lookup_prints_catalog_text(capsys):
 
 
 def test_catalog_json_includes_summary_and_lookup(capsys):
-    status = cmd_vida_catalog(catalog_args(code="P034211", json=True))
+    status = cmd_diag_catalog(catalog_args(code="P034211", json=True))
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0
     assert list(payload) == sorted(payload)
-    assert payload["schema"] == "pydice.vida_catalog"
+    assert payload["schema"] == "pydice.diag_catalog"
     assert payload["version"] == 1
     assert payload["counts"] == {
         "dtc_descriptions": 5,
@@ -157,7 +157,7 @@ def test_catalog_json_includes_summary_and_lookup(capsys):
 
 
 def test_catalog_missing_dtc_returns_nonzero(capsys):
-    status = cmd_vida_catalog(catalog_args(code="P999999"))
+    status = cmd_diag_catalog(catalog_args(code="P999999"))
 
     captured = capsys.readouterr()
     assert status == 1
@@ -165,7 +165,7 @@ def test_catalog_missing_dtc_returns_nonzero(capsys):
 
 
 def test_catalog_missing_dtc_json_reports_not_found(capsys):
-    status = cmd_vida_catalog(catalog_args(code="P999999", json=True))
+    status = cmd_diag_catalog(catalog_args(code="P999999", json=True))
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 1
@@ -179,7 +179,7 @@ def test_catalog_missing_dtc_json_reports_not_found(capsys):
 def test_catalog_missing_file_returns_nonzero_without_traceback(tmp_path, capsys):
     missing = tmp_path / "missing-catalog.json"
 
-    status = main(["vida-catalog", "--catalog", str(missing)])
+    status = main(["diag-catalog", "--catalog", str(missing)])
 
     captured = capsys.readouterr()
     assert status == 1
@@ -187,11 +187,11 @@ def test_catalog_missing_file_returns_nonzero_without_traceback(tmp_path, capsys
     assert "Traceback" not in captured.err
 
 
-# vida-report --------------------------------------------------------------
+# diag-report --------------------------------------------------------------
 
 
 def test_report_profile_network_view(capsys):
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(SCAN_PROFILE, view="network")
     )
 
@@ -206,7 +206,7 @@ def test_report_profile_network_view(capsys):
 def test_report_dtcs_view_merges_catalog_descriptions(tmp_path, capsys):
     scan = write_scan(tmp_path, scan_with_dtcs())
 
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(scan, catalog=CATALOG, view="dtcs")
     )
 
@@ -222,7 +222,7 @@ def test_report_dtcs_view_merges_catalog_descriptions(tmp_path, capsys):
 def test_report_faults_view_groups_current_records(tmp_path, capsys):
     scan = write_scan(tmp_path, scan_with_dtcs())
 
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(scan, catalog=CATALOG, view="faults")
     )
 
@@ -239,7 +239,7 @@ def test_report_faults_view_groups_current_records(tmp_path, capsys):
 def test_report_all_human_includes_modules_network_and_faults(tmp_path, capsys):
     scan = write_scan(tmp_path, scan_with_dtcs())
 
-    status = cmd_vida_report(report_args(scan, catalog=CATALOG, view="all"))
+    status = cmd_diag_report(report_args(scan, catalog=CATALOG, view="all"))
 
     out = capsys.readouterr().out
     assert status == 0
@@ -254,7 +254,7 @@ def test_report_json_all_is_stable_and_scopes_descriptions(tmp_path, capsys):
     scan = write_scan(tmp_path, scan_with_dtcs())
     vehicle = {"vin": "YV1TEST0000000000", "model_year": "2012"}
 
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(
             scan,
             catalog=CATALOG,
@@ -305,7 +305,7 @@ def test_report_vehicle_profile_can_be_a_file(tmp_path, capsys):
         json.dumps({"vin": "YV1FILE0000000000"}), encoding="utf-8"
     )
 
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(
             scan,
             catalog=CATALOG,
@@ -323,7 +323,7 @@ def test_report_vehicle_profile_can_be_a_file(tmp_path, capsys):
 def test_report_json_network_view_omits_other_sections(tmp_path, capsys):
     scan = write_scan(tmp_path, scan_with_dtcs())
 
-    status = cmd_vida_report(
+    status = cmd_diag_report(
         report_args(scan, catalog=CATALOG, view="network", json=True)
     )
 
@@ -338,7 +338,7 @@ def test_report_json_network_view_omits_other_sections(tmp_path, capsys):
 def test_report_missing_scan_returns_nonzero_without_traceback(tmp_path, capsys):
     missing = tmp_path / "missing-scan.json"
 
-    status = main(["vida-report", "--scan", str(missing)])
+    status = main(["diag-report", "--scan", str(missing)])
 
     captured = capsys.readouterr()
     assert status == 1
@@ -351,7 +351,7 @@ def test_report_missing_catalog_returns_nonzero(tmp_path, capsys):
     missing = tmp_path / "missing-catalog.json"
 
     status = main(
-        ["vida-report", "--scan", str(scan), "--catalog", str(missing)]
+        ["diag-report", "--scan", str(scan), "--catalog", str(missing)]
     )
 
     captured = capsys.readouterr()
@@ -359,11 +359,11 @@ def test_report_missing_catalog_returns_nonzero(tmp_path, capsys):
     assert "catalog not found: {}".format(missing) in captured.err
 
 
-# vida-script --------------------------------------------------------------
+# diag-script --------------------------------------------------------------
 
 
 def test_script_human_shows_header_plans_and_read_requests(capsys):
-    status = cmd_vida_script(script_args(SCRIPT_XML))
+    status = cmd_script_plan(script_args(SCRIPT_XML))
 
     out = capsys.readouterr().out
     assert status == 0
@@ -382,7 +382,7 @@ def test_script_human_shows_header_plans_and_read_requests(capsys):
 
 
 def test_script_json_reports_plan_and_never_executes(capsys):
-    status = cmd_vida_script(script_args(SCRIPT_XML, json=True))
+    status = cmd_script_plan(script_args(SCRIPT_XML, json=True))
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -407,7 +407,7 @@ def test_script_json_reports_plan_and_never_executes(capsys):
 
 
 def test_script_safety_filter_drops_write_services(capsys):
-    status = cmd_vida_script(script_args(SCRIPT_CLEAR, json=True))
+    status = cmd_script_plan(script_args(SCRIPT_CLEAR, json=True))
 
     payload = json.loads(capsys.readouterr().out)
     assert status == 0
@@ -428,7 +428,7 @@ def test_script_safety_filter_drops_write_services(capsys):
 
 
 def test_script_human_marks_blocked_services(capsys):
-    status = cmd_vida_script(script_args(SCRIPT_CLEAR))
+    status = cmd_script_plan(script_args(SCRIPT_CLEAR))
 
     out = capsys.readouterr().out
     assert status == 0
@@ -447,7 +447,7 @@ def test_script_accepts_zip_archive(tmp_path, capsys):
     path = tmp_path / "script.zip"
     path.write_bytes(archive.getvalue())
 
-    status = cmd_vida_script(script_args(path))
+    status = cmd_script_plan(script_args(path))
 
     out = capsys.readouterr().out
     assert status == 0
@@ -456,7 +456,7 @@ def test_script_accepts_zip_archive(tmp_path, capsys):
 
 
 def test_script_malformed_returns_nonzero_without_traceback(capsys):
-    status = main(["vida-script", "--script", str(SCRIPT_MALFORMED)])
+    status = main(["diag-script", "--script", str(SCRIPT_MALFORMED)])
 
     captured = capsys.readouterr()
     assert status == 1
@@ -468,7 +468,7 @@ def test_script_malformed_returns_nonzero_without_traceback(capsys):
 def test_script_missing_file_returns_nonzero_without_traceback(tmp_path, capsys):
     missing = tmp_path / "missing-script.xml"
 
-    status = main(["vida-script", "--script", str(missing)])
+    status = main(["diag-script", "--script", str(missing)])
 
     captured = capsys.readouterr()
     assert status == 1
@@ -478,21 +478,21 @@ def test_script_missing_file_returns_nonzero_without_traceback(tmp_path, capsys)
 # Parser wiring ------------------------------------------------------------
 
 
-def test_parser_registers_vida_commands():
+def test_parser_registers_diag_commands():
     parser = build_parser()
 
-    catalog = parser.parse_args(["vida-catalog", "--catalog", str(CATALOG)])
-    assert catalog.func is cmd_vida_catalog
+    catalog = parser.parse_args(["diag-catalog", "--catalog", str(CATALOG)])
+    assert catalog.func is cmd_diag_catalog
     assert catalog.code is None
     assert catalog.json is False
 
-    report = parser.parse_args(["vida-report", "--scan", str(SCAN_PROFILE)])
-    assert report.func is cmd_vida_report
+    report = parser.parse_args(["diag-report", "--scan", str(SCAN_PROFILE)])
+    assert report.func is cmd_diag_report
     assert report.catalog is None
     assert report.vehicle is None
     assert report.view == "all"
     assert report.json is False
 
-    script = parser.parse_args(["vida-script", "--script", str(SCRIPT_XML)])
-    assert script.func is cmd_vida_script
+    script = parser.parse_args(["diag-script", "--script", str(SCRIPT_XML)])
+    assert script.func is cmd_script_plan
     assert script.json is False

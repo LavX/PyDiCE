@@ -1,13 +1,13 @@
-"""Tests for the guarded read-only VIDA script runner."""
+"""Tests for the guarded read-only diagnostic script runner."""
 
 import json
 from pathlib import Path
 
 import pytest
 
-from volvo_p3.cli import build_parser, cmd_vida_run_script, main
+from volvo_p3.cli import build_parser, cmd_diag_run_script, main
 from volvo_p3.protocol import VolvoFrame
-from volvo_p3.vida_runner import (
+from volvo_p3.script_runner import (
     AddressMapError,
     RequestRecord,
     RunPlan,
@@ -16,12 +16,12 @@ from volvo_p3.vida_runner import (
     parse_address_map,
     run_plan,
 )
-from volvo_p3.vida_script import parse_script_xml
+from volvo_p3.script_plan import parse_script_xml
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
-SCRIPT_XML = FIXTURES / "vida_script_read_dtc.xml"
-SCRIPT_CLEAR = FIXTURES / "vida_script_clear_dtc.xml"
+SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
+SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
 
 
 def read_script():
@@ -381,7 +381,7 @@ def test_cli_dry_run_prints_plan_and_never_executes(tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -402,7 +402,7 @@ def test_cli_dry_run_json_has_plan_and_no_result(tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -468,7 +468,7 @@ def test_cli_execute_runs_through_transport(monkeypatch, tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -495,7 +495,7 @@ def test_cli_missing_address_map_is_clear(tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -514,7 +514,7 @@ def test_cli_invalid_address_map_is_clear(tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -534,7 +534,7 @@ def test_cli_execute_without_mapped_requests_reports(tmp_path, capsys):
 
     status = main(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -549,12 +549,12 @@ def test_cli_execute_without_mapped_requests_reports(tmp_path, capsys):
     assert "Traceback" not in captured.err
 
 
-def test_parser_registers_vida_run_script(tmp_path):
+def test_parser_registers_diag_run_script(tmp_path):
     map_path = write_map(tmp_path, {"0x11": "0x7E0"})
 
     args = build_parser().parse_args(
         [
-            "vida-run-script",
+            "diag-run-script",
             "--script",
             str(SCRIPT_XML),
             "--address-map",
@@ -562,7 +562,7 @@ def test_parser_registers_vida_run_script(tmp_path):
         ]
     )
 
-    assert args.func is cmd_vida_run_script
+    assert args.func is cmd_diag_run_script
     assert args.execute is False
     assert args.timeout == 1.5
     assert args.json is False
