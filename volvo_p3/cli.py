@@ -304,6 +304,12 @@ def cmd_dice_scan(args: argparse.Namespace) -> int:
         report["error"] = str(exc)
     finally:
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
+        catalog_path = getattr(args, "vida_catalog", None)
+        if catalog_path:
+            try:
+                report["vida"] = _vida_report_section(report, catalog_path)
+            except (ValueError, OSError) as exc:
+                report["vida_error"] = str(exc)
         save()
     if args.save_profile and scan_completed and report["status"] not in ("error", "interrupted"):
         responded = {m["request_id"] for m in report["modules"]
@@ -405,6 +411,14 @@ def _parse_vehicle_profile(value):
             "(pass inline JSON or a JSON file)"
         )
     return _load_json_object(path, "vehicle profile")
+
+
+def _vida_report_section(scan, catalog_path) -> dict:
+    """Build the optional VIDA section attached to a live scan report."""
+    catalog = _load_vida_catalog(Path(catalog_path))
+    return build_report(scan, _catalog_report_mapping(catalog)).to_dict(
+        include_raw=False
+    )
 
 
 def _catalog_report_mapping(catalog) -> dict:
@@ -1346,6 +1360,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--save-profile", type=Path, help="save responding targets to a new reusable profile")
     scan.add_argument("--replace-profile", action="store_true", help="replace an existing saved profile after discovery")
     scan.add_argument("--all-records", action="store_true", help="also display monitors with no fault bits; JSON always includes every record")
+    scan.add_argument("--vida-catalog", type=Path, help="optional VIDA catalog JSON; adds a VIDA fault-trace section")
     scan.set_defaults(func=cmd_dice_scan)
 
     probe_dice_raw = subparsers.add_parser("probe-dice-raw", help="detect DiCE through PyUSB/libusb")

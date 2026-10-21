@@ -7,6 +7,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from volvo_p3.cli import (
+    _vida_report_section,
     build_parser,
     cmd_vida_catalog,
     cmd_vida_report,
@@ -34,6 +35,15 @@ def dtc_record(code, status_byte, failure_type):
         "effective_status_byte": status_byte,
         "effective_status_hex": "0x{:02X}".format(status_byte),
     }
+
+
+def test_vida_report_section_for_live_scan_shape():
+    scan = json.loads(SCAN_PROFILE.read_text(encoding="utf-8"))
+    section = _vida_report_section(scan, CATALOG)
+
+    assert section["counts"]["modules"] == 18
+    assert section["counts"]["dtcs"] == 0
+    assert section["network"]["responder_count"] == 0
 
 
 def scan_with_dtcs():

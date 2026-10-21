@@ -53,6 +53,17 @@ python3 -m volvo_p3.cli vida-report \
   --view all
 ```
 
+Attach the same VIDA section to a live scan:
+
+```sh
+sudo python3 -m volvo_p3.cli dice-scan \
+  --discover --timeout 0.5 \
+  --vida-catalog reports/vida_catalog.json
+```
+
+The saved report then carries a `vida` object with module, network,
+fault-trace and description data alongside the raw scan evidence.
+
 Parse a script without executing it:
 
 ```sh

@@ -60,6 +60,7 @@ fault-trace views. The catalog export needs no SQL Server.
 ```sh
 python3 tools/export_vida_catalog.py --image /mnt/vida --out reports/vida_catalog.json
 python3 -m volvo_p3.cli vida-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/vida_catalog.json
+sudo python3 -m volvo_p3.cli dice-scan --discover --vida-catalog reports/vida_catalog.json
 python3 -m volvo_p3.cli vida-script --script path/to/script.zip
 python3 -m volvo_p3.cli vida-run-script --script path/to/script.zip --address-map reports/vida_addresses.json
 ```
