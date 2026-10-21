@@ -59,13 +59,21 @@ bodies, and builds read-only DTC, network and fault-trace views. The catalog
 export needs no SQL Server.
 
 ```sh
-python3 tools/export_diag_catalog.py --image /mnt/vida --out reports/diag_catalog.json
-python3 tools/export_diag_catalog.py --image /mnt/vida --dump-dir reports/diag-dump
-python3 -m volvo_p3.cli diag-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/diag_catalog.json
-sudo python3 -m volvo_p3.cli dice-scan --discover --diag-catalog reports/diag_catalog.json
+python3 tools/export_diag_catalog.py --image /mnt/vida --out data/diag_catalog.json.gz
+python3 tools/export_diag_catalog.py --image /mnt/vida --dump-archive data/diag_dump.tar.gz
+python3 tools/pack_diag_dump.py --input data/diag_dump --output data/diag_dump.tar.xz
+python3 -m volvo_p3.cli diag-report --scan reports/dice-scan-TIMESTAMP.json --catalog data/diag_catalog.json.gz
+sudo python3 -m volvo_p3.cli dice-scan --discover --diag-catalog data/diag_catalog.json.gz
 python3 -m volvo_p3.cli diag-script --script path/to/script.zip
 python3 -m volvo_p3.cli diag-run-script --script path/to/script.zip --address-map reports/address_map.json
 ```
+
+The catalog loader and writer select gzip, bzip2 or xz from the suffix
+(`.json.gz`, `.json.bz2`, `.json.xz`), so the diagnostic commands accept a
+compressed catalog without extra flags. `--dump-dir` still writes the plain
+dump tree. `--dump-archive` and `tools/pack_diag_dump.py` write one `.tar.gz`,
+`.tar.xz` or `.zip` archive with `catalog.json` at its root. The TUI looks for
+`data/diag_catalog.json.gz` by default.
 
 `diag-run-script` only plans by default. `--execute` sends the planned read
 services through the native DiCE transport; non-read services are never sent.

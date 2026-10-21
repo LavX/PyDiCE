@@ -8,6 +8,7 @@ from unittest import mock
 
 from volvo_p3.diagnostics import build_report
 from volvo_p3.tui import (
+    DEFAULT_DIAG_CATALOG,
     NativeScanResult,
     VolvoTuiApp,
     build_diag_catalog_view,
@@ -28,6 +29,7 @@ from volvo_p3.tui import (
 FIXTURES = Path(__file__).with_name("fixtures")
 SCAN = FIXTURES / "my-car-complete.json"
 CATALOG = FIXTURES / "diag_catalog.json"
+COMPRESSED_CATALOG = FIXTURES / "diag_catalog.json.gz"
 SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
 SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
 SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
@@ -205,6 +207,15 @@ class DiagReportTests(unittest.TestCase):
         self.assertIn("timing entries: 4", lines)
         self.assertIn("profiles: 1", lines)
         self.assertIn("scripts: 1", lines)
+
+    def test_catalog_view_accepts_a_compressed_catalog(self):
+        lines = build_diag_catalog_view(COMPRESSED_CATALOG)
+
+        self.assertIn("source: synthetic", lines)
+        self.assertIn("dtc descriptions: 5 (4 codes)", lines)
+
+    def test_default_catalog_path_is_compressed(self):
+        self.assertEqual(DEFAULT_DIAG_CATALOG, "data/diag_catalog.json.gz")
 
     def test_catalog_view_handles_missing_and_blank_paths(self):
         missing = build_diag_catalog_view(MISSING)

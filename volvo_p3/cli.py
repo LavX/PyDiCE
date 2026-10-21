@@ -1364,7 +1364,14 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--save-profile", type=Path, help="save responding targets to a new reusable profile")
     scan.add_argument("--replace-profile", action="store_true", help="replace an existing saved profile after discovery")
     scan.add_argument("--all-records", action="store_true", help="also display monitors with no fault bits; JSON always includes every record")
-    scan.add_argument("--diag-catalog", type=Path, help="optional diagnostic catalog JSON; adds a fault-trace section")
+    scan.add_argument(
+        "--diag-catalog",
+        type=Path,
+        help=(
+            "optional diagnostic catalog (.json or compressed); adds a "
+            "fault-trace section"
+        ),
+    )
     scan.set_defaults(func=cmd_dice_scan)
 
     probe_dice_raw = subparsers.add_parser("probe-dice-raw", help="detect DiCE through PyUSB/libusb")
@@ -1384,7 +1391,10 @@ def build_parser() -> argparse.ArgumentParser:
         "diag-catalog", help="inspect a service catalog JSON export"
     )
     diag_catalog.add_argument(
-        "--catalog", type=Path, required=True, help="catalog JSON file"
+        "--catalog",
+        type=Path,
+        required=True,
+        help="catalog file: .json, .json.gz, .json.bz2 or .json.xz",
     )
     diag_catalog.add_argument(
         "--code", help="DTC code to look up, for example P034211"
@@ -1399,7 +1409,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--scan", type=Path, required=True, help="saved dice-scan JSON report"
     )
     diag_report.add_argument(
-        "--catalog", type=Path, help="optional service catalog JSON for DTC descriptions"
+        "--catalog",
+        type=Path,
+        help="optional service catalog for DTC descriptions (.json or compressed)",
     )
     diag_report.add_argument(
         "--vehicle", metavar="JSON", help="inline vehicle profile JSON or a JSON file"

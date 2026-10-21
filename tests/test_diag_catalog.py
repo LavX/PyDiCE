@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from volvo_p3.diag_catalog import (
@@ -19,6 +20,7 @@ from volvo_p3.diag_catalog import (
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "diag_catalog.json"
+COMPRESSED_FIXTURE = Path(__file__).parent / "fixtures" / "diag_catalog.json.gz"
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPORTER = REPOSITORY_ROOT / "tools" / "export_diag_catalog.py"
 
@@ -135,6 +137,79 @@ class DiagnosticCatalogTests(unittest.TestCase):
         self.assertEqual(serialized["schema"], SCHEMA_NAME)
         self.assertEqual(serialized["version"], SCHEMA_VERSION)
         self.assertEqual(serialized["timing"][0]["request"], "AE1B")
+
+    def test_loads_compressed_fixture(self):
+        catalog = load_catalog(COMPRESSED_FIXTURE)
+        self.assertEqual(catalog_to_dict(catalog), catalog_to_dict(self.catalog))
+
+    def test_round_trip_compressed_formats(self):
+        expected = catalog_to_dict(self.catalog)
+        magic = {
+            ".json.gz": b"\x1f\x8b",
+            ".json.bz2": b"BZh",
+            ".json.xz": b"\xfd7zXZ\x00",
+            ".json.zip": b"PK\x03\x04",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix in magic:
+                with self.subTest(suffix=suffix):
+                    target = Path(directory) / ("catalog" + suffix)
+                    dump_catalog(self.catalog, target)
+                    self.assertTrue(
+                        target.read_bytes().startswith(magic[suffix]),
+                        "missing {} magic".format(suffix),
+                    )
+                    reloaded = load_catalog(target)
+                    self.assertEqual(catalog_to_dict(reloaded), expected)
+
+    def test_zip_catalog_member_is_named_from_the_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "catalog.json.zip"
+            dump_catalog(self.catalog, target)
+            with zipfile.ZipFile(target) as archive:
+                self.assertEqual(archive.namelist(), ["catalog.json"])
+
+    def test_unsupported_catalog_suffix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "catalog.txt"
+            target.write_text("{}", encoding="utf-8")
+            with self.assertRaises(CatalogError) as caught:
+                load_catalog(target)
+            self.assertIn("unsupported catalog suffix", str(caught.exception))
+            with self.assertRaises(CatalogError):
+                dump_catalog(self.catalog, target)
+
+    def test_corrupt_compressed_catalog_is_a_catalog_error(self):
+        labels = {
+            ".json.gz": "gzip",
+            ".json.bz2": "bzip2",
+            ".json.xz": "xz",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix, label in labels.items():
+                with self.subTest(suffix=suffix):
+                    target = Path(directory) / ("catalog" + suffix)
+                    target.write_bytes(b"not a compressed catalog")
+                    with self.assertRaises(CatalogError) as caught:
+                        load_catalog(target)
+                    self.assertIn(label, str(caught.exception))
+                    self.assertIn("corrupt", str(caught.exception))
+
+    def test_zip_catalog_requires_exactly_one_json_member(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "catalog.zip"
+            with zipfile.ZipFile(target, "w") as archive:
+                archive.writestr("first.json", "{}")
+                archive.writestr("second.json", "{}")
+            with self.assertRaises(CatalogError) as caught:
+                load_catalog(target)
+            self.assertIn("exactly one .json member", str(caught.exception))
+
+    def test_missing_compressed_catalog_propagates_file_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "missing.json.gz"
+            with self.assertRaises(FileNotFoundError):
+                load_catalog(target)
 
     def test_malformed_catalogs_raise_catalog_error(self):
         cases = []
