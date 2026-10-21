@@ -145,7 +145,8 @@ The session records how the identification was reached. `VehicleSpecVO` carries
 
 ## What actually differs per profile
 
-The profile ID set is a join key for content, not for bus traffic:
+In the web application, the profile ID set is a join key for content, not for
+bus traffic:
 
 | Consumer | Effect |
 | --- | --- |
@@ -246,13 +247,15 @@ If vehicle type should matter, the VIDA shape worth copying is:
 * **wildcard matching** where a null component on a candidate matches any
   selection,
 * an **always-included generic profile** so partial selections still resolve,
-* resolution to a **set** of profile IDs, used as a join key by every read path,
-  rather than a single selected value.
+* resolution to a **set** of profile IDs, used as a join key by the content and
+  script paths, rather than a single selected value.
 
 That last point is the one that affects `volvo_p3` most. `module_scan` currently
-assumes one flat target list (`P3_D6_MODULES`) or one explicit profile file. A
-VIDA-shaped design would resolve a selection to a set of compatible module
-profiles and scan the union.
+assumes one flat target list (`P3_D6_MODULES`) or one explicit profile file.
+VIDA's version is a profile-selected read plan whose `EcuAddress` and
+`ServiceId` fields carry the addressing. A local design could keep a module
+profile set or adopt a script-shaped plan; either way, the union is data, not a
+hardcoded list.
 
 The timing database is the more immediately useful half. Right now every read
 uses one fixed `--timeout`, and `dice_can` retries nothing. VIDA treats timeout
@@ -267,8 +270,9 @@ observed behaviour rather than from the VIDA table itself.
    content stack does not; it only filters documents, parts and symptoms.
    `J2534DeviceDriver` is a device descriptor only. But the managed diagnostic
    client resolves the vehicle again and selects a script by the same profile set
-   (`GetScript`), so the profile does reach the car indirectly. What the script
-   contains is still unopened, so the effect on the wire remains unproven.
+   (`GetScript`). The parser names show `EcuAddress` and `ServiceId` inside that
+   script, so the profile reaches the car indirectly. No script value was read,
+   so the effect on the wire remains unproven.
 2. **What consumes `fkNodeECU`?** `VehicleProfileDAO` selects it into
    `VehicleProfileVO`, but `getNodeECU` has no caller in `VidaEjb`, `VidaData`,
    or the 279 `VidaWeb` classes. Either the Windows client reads it, or it is

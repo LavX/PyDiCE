@@ -57,7 +57,7 @@ Two points matter for this transport. First, on the Java side those profile IDs 
 
 Until that question closes, `module_scan` target selection stays explicit: `P3_D6_MODULES`, a discovery sweep, or a JSON profile. The transferable idea is the shape, not the tables: nullable components with wildcard matching and an always-valid generic profile, resolving to a set of module profiles that get scanned as a union.
 
-The diagnostic client turns out to select a compressed XML script by that same profile set, not a list of module IDs, and it carries its own platform switch (`VehType`, `p2x` in the shipped config). So a vehicle-to-module mapping is something this repository would be introducing, not copying from VIDA. The client is written up in `docs/vida-diagnostics-client.md`.
+The diagnostic client selects a compressed XML script by that same profile set. The parser names in `BizServices.Scripting.DLL` include `EcuAddress`, `TesterAddress` and `ServiceId`, so the read plan's addressing appears to live inside the profile-selected script rather than in a separate address table. No script body was read. The client also carries a platform switch (`VehType`, `p2x` in the shipped config). `volvo_p3` still needs its own explicit `P3_D6_MODULES` or discovery profile until that gap closes. The client is written up in `docs/vida-diagnostics-client.md`.
 
 The full recovery, including the cascade SQL and the stored procedures, is in `docs/vida-vehicle-profile.md`.
 
