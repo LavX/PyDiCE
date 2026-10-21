@@ -6,13 +6,18 @@ from pathlib import Path
 import pytest
 
 from volvo_p3.cli import build_parser, cmd_diag_run_script, main
+from volvo_p3.module_scan import ModuleTarget
 from volvo_p3.protocol import VolvoFrame
 from volvo_p3.script_runner import (
+    AddressMap,
     AddressMapError,
     RequestRecord,
     RunPlan,
+    build_profile_name_map,
     build_run_plan,
     decode_response_payload,
+    load_profile_name_map,
+    normalize_ecu_name,
     parse_address_map,
     run_plan,
 )
@@ -22,10 +27,16 @@ from volvo_p3.script_plan import parse_script_xml
 FIXTURES = Path(__file__).with_name("fixtures")
 SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
 SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
+SCRIPT_NAMED = FIXTURES / "script_plan_named.xml"
+PROFILE_NAMED = FIXTURES / "profile_named.json"
 
 
 def read_script():
     return parse_script_xml(SCRIPT_XML.read_text(encoding="utf-8"))
+
+
+def named_script():
+    return parse_script_xml(SCRIPT_NAMED.read_text(encoding="utf-8"))
 
 
 def clear_script():
@@ -130,6 +141,109 @@ def test_address_map_rejects_non_object():
         parse_address_map(["0x11", "0x7E0"])
 
 
+# Name entries --------------------------------------------------------------
+
+
+def test_address_map_resolves_name_when_numeric_is_absent():
+    address_map = AddressMap(names={"D.I.M.": "0x720"})
+
+    match = address_map.resolve(17, None, "dim", None)
+
+    assert match.can_id == 0x720
+    assert match.logical_kind == "ecu_name"
+    assert match.logical_address is None
+
+
+def test_address_map_numeric_entry_wins_over_a_name_entry():
+    address_map = AddressMap({"17": "0x7E1"}, {"ECM": "0x7E0"})
+
+    match = address_map.resolve(17, None, "ECM")
+
+    assert match.can_id == 0x7E1
+    assert match.logical_kind == "ecu_address"
+
+
+def test_address_map_uses_identifier_after_the_name_misses():
+    address_map = AddressMap(names={"DIM": "0x720"})
+
+    match = address_map.resolve(
+        None, 381101, "Driver Information Module", "DIM"
+    )
+
+    assert match.can_id == 0x720
+    assert match.logical_kind == "ecu_identifier"
+
+
+def test_address_map_reports_a_name_without_guessing():
+    address_map = AddressMap(names={"ECM": "0x7E0"})
+
+    match = address_map.resolve(None, None, "ABS")
+
+    assert match.can_id is None
+    assert match.logical_kind == "ecu_name"
+    assert match.logical_address is None
+
+
+def test_address_map_rejects_conflicting_name_entries():
+    with pytest.raises(AddressMapError, match="ECU name"):
+        AddressMap(names={"DIM": "0x720", "D.I.M.": "0x721"})
+
+
+def test_normalize_ecu_name_folds_case_and_punctuation_only():
+    assert normalize_ecu_name(" d.i.m. ") == "DIM"
+    assert normalize_ecu_name("Driver Information Module") != "DIM"
+    assert normalize_ecu_name("lås") == "LÅS"
+
+
+# Profile name matching -----------------------------------------------------
+
+
+def test_profile_name_map_matches_names_and_identifiers_exactly():
+    name_map, report = load_profile_name_map(named_script(), PROFILE_NAMED)
+
+    assert name_map.get_name("ECM") == 0x7E0
+    assert name_map.get_name("DIM") == 0x720
+    assert [entry.status for entry in report.entries] == [
+        "matched",
+        "matched",
+        "missing",
+        "ambiguous",
+    ]
+    assert report.matched[0].field == "ecu_name"
+    assert report.matched[1].field == "ecu_identifier"
+    assert report.missing[0].value == "ABS"
+    assert report.ambiguous[0].value == "GWM"
+    assert set(report.ambiguous[0].profile_names) == {"GWM", "G.W.M"}
+    assert report.counts()["ecus"] == 4
+
+
+def test_profile_name_map_never_maps_an_ambiguous_name():
+    name_map, report = build_profile_name_map(
+        named_script(),
+        [
+            ModuleTarget("GWM", 0x730, 0x738),
+            ModuleTarget("G.W.M", 0x731, 0x739),
+        ],
+    )
+
+    assert name_map.name_items() == ()
+    assert len(report.ambiguous) == 1
+    assert report.ambiguous[0].can_id is None
+
+
+def test_profile_name_map_reports_a_missing_profile(tmp_path):
+    with pytest.raises(ValueError, match="module profile not found"):
+        load_profile_name_map(named_script(), tmp_path / "missing.json")
+
+
+def test_profile_name_map_rejects_an_empty_profile(tmp_path):
+    path = tmp_path / "empty.json"
+    path.write_text(json.dumps({"modules": []}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid module profile"):
+        load_profile_name_map(named_script(), path)
+
+
 # Planning ------------------------------------------------------------------
 
 
@@ -166,6 +280,50 @@ def test_plan_reports_unmapped_address_without_guessing():
     assert len(plan.unmapped) == 1
     assert plan.unmapped[0].kind == "ecu_type"
     assert plan.unmapped[0].value == 381101
+
+
+def test_plan_with_profile_name_map_plans_matches_and_reports_the_rest():
+    name_map, _ = load_profile_name_map(named_script(), PROFILE_NAMED)
+
+    plan = build_run_plan(named_script(), name_map)
+
+    assert [record.status for record in plan.records] == [
+        "planned",
+        "planned",
+        "skipped_unmapped",
+        "skipped_unmapped",
+    ]
+    assert [record.can_id for record in plan.records] == [0x7E0, 0x720, None, None]
+    assert [record.logical_kind for record in plan.records] == [
+        "ecu_name",
+        "ecu_identifier",
+        "ecu_address",
+        "ecu_address",
+    ]
+    assert [item.name for item in plan.unmapped] == ["ABS", "GWM"]
+    assert plan.to_dict()["unmapped"][0]["name"] == "ABS"
+
+
+def test_named_script_still_drops_every_non_read_service():
+    script = parse_script_xml(
+        """<script type="ClearDtc"><content><nodes>
+        <node class="Components.VehComm">
+          <property name="Mode" value="EcuAddress" />
+          <property name="EcuAddress" value="17" />
+          <property name="EcuName" value="ECM" />
+          <property name="ServiceId" value="14" />
+          <property name="ServiceId" value="27" />
+          <property name="ServiceId" value="19" />
+          <property name="Request" value="19 02 FF" />
+        </node>
+        </nodes></content></script>"""
+    )
+    name_map, _ = load_profile_name_map(script, PROFILE_NAMED)
+
+    plan = build_run_plan(script, name_map)
+
+    assert [record.service_id for record in plan.records] == [0x19]
+    assert plan.records[0].status == "planned"
 
 
 def test_plan_drops_every_non_read_service():
@@ -547,6 +705,177 @@ def test_cli_execute_without_mapped_requests_reports(tmp_path, capsys):
     assert status == 1
     assert "nothing to execute" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_cli_profile_only_plans_and_reports_name_matches(capsys):
+    status = main(
+        [
+            "diag-run-script",
+            "--script",
+            str(SCRIPT_NAMED),
+            "--profile",
+            str(PROFILE_NAMED),
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert status == 0
+    assert (
+        "Name matches: 2 matched, 1 ambiguous, 1 missing, 0 unnamed "
+        "(4 script ECUs)" in out
+    )
+    assert "ambiguous ecu_name GWM: profile names GWM, G.W.M" in out
+    assert "no profile module named ABS (ecu_name)" in out
+    assert "-> 0x7E0" in out
+    assert "-> 0x720" in out
+    assert "Unmapped logical addresses (2):" in out
+    assert "Mode: plan only. No CAN frames were sent." in out
+
+
+def test_cli_profile_only_json_has_no_address_map_path(capsys):
+    status = main(
+        [
+            "diag-run-script",
+            "--script",
+            str(SCRIPT_NAMED),
+            "--profile",
+            str(PROFILE_NAMED),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert payload["address_map"]["path"] is None
+    assert payload["address_map"]["entries"] == []
+    assert {entry["name"] for entry in payload["address_map"]["names"]} == {
+        "ECM",
+        "DIM",
+    }
+    assert payload["profile"]["path"] == str(PROFILE_NAMED)
+    assert payload["profile"]["name_map"]["counts"]["ambiguous"] == 1
+
+
+def test_cli_address_map_wins_over_a_profile_name_match(tmp_path, capsys):
+    map_path = write_map(tmp_path, {"addresses": {"17": "0x7E1"}})
+
+    status = main(
+        [
+            "diag-run-script",
+            "--script",
+            str(SCRIPT_NAMED),
+            "--address-map",
+            str(map_path),
+            "--profile",
+            str(PROFILE_NAMED),
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    first = payload["plan"]["records"][0]
+    assert first["can_id"] == 0x7E1
+    assert first["logical_kind"] == "ecu_address"
+    names = {
+        entry["name"]: entry["can_id"]
+        for entry in payload["address_map"]["names"]
+    }
+    assert names == {"DIM": 0x720, "ECM": 0x7E0}
+
+
+def test_cli_requires_an_address_map_or_a_profile(capsys):
+    status = main(["diag-run-script", "--script", str(SCRIPT_XML)])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "supply --address-map, --profile, or both" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_profile_with_missing_file_is_clear(tmp_path, capsys):
+    missing = tmp_path / "missing-profile.json"
+
+    status = main(
+        [
+            "diag-run-script",
+            "--script",
+            str(SCRIPT_NAMED),
+            "--profile",
+            str(missing),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "module profile not found: {}".format(missing) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_execute_with_profile_sends_only_planned_reads(monkeypatch, capsys):
+    sent = []
+    answered = {"done": False}
+
+    class FakeBus:
+        def __init__(self, rpc, uds_requests=(), allow_read_services=False):
+            self.uds_requests = tuple(uds_requests)
+            self.allow_read_services = allow_read_services
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def send(self, frame):
+            sent.append(frame)
+
+        def recv(self, timeout=1.0):
+            if (
+                not answered["done"]
+                and sent
+                and sent[-1].data[:4] == bytes.fromhex("03 19 02 FF")
+            ):
+                answered["done"] = True
+                return dtc_response(0x7E0)
+            return None
+
+    class FakeRpc:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("volvo_p3.dice_can.DiceCanTransport", FakeBus)
+    monkeypatch.setattr("volvo_p3.dice_rpc.DiceRpc", FakeRpc)
+
+    status = main(
+        [
+            "diag-run-script",
+            "--script",
+            str(SCRIPT_NAMED),
+            "--profile",
+            str(PROFILE_NAMED),
+            "--execute",
+            "--timeout",
+            "0.02",
+            "--json",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert [record["status"] for record in payload["result"]["records"]] == [
+        "response",
+        "timeout",
+        "skipped_unmapped",
+        "skipped_unmapped",
+    ]
+    assert [frame.arbitration_id for frame in sent] == [0x7E0, 0x720]
+    assert all(
+        frame.data[1] in {0x01, 0x09, 0x19, 0x22} for frame in sent
+    )
 
 
 def test_parser_registers_diag_run_script(tmp_path):

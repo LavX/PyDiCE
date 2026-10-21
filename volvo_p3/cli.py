@@ -41,10 +41,13 @@ from .script_runner import (
     STATUS_ERROR,
     STATUS_PLANNED,
     STATUS_RESPONSE,
+    AddressMap,
     AddressMapError,
+    NameMapReport,
     RunPlan,
     RunResult,
     build_run_plan,
+    load_profile_name_map,
     parse_address_map,
     run_plan,
 )
@@ -860,6 +863,8 @@ def _script_payload(script, path: Path) -> dict:
                 "ecu_type_hex": _format_id(ecu.ecu_type),
                 "tester_address": ecu.tester_address,
                 "tester_address_hex": _format_id(ecu.tester_address),
+                "ecu_name": ecu.ecu_name,
+                "ecu_identifier": ecu.ecu_identifier,
                 "service_ids": list(ecu.service_ids),
                 "service_ids_hex": [
                     "0x{:02X}".format(service_id)
@@ -888,6 +893,8 @@ def _script_payload(script, path: Path) -> dict:
                 "ecu_address_hex": _format_id(request.ecu_address),
                 "ecu_type": request.ecu_type,
                 "tester_address": request.tester_address,
+                "ecu_name": request.ecu_name,
+                "ecu_identifier": request.ecu_identifier,
                 "service_id": request.service_id,
                 "service_id_hex": "0x{:02X}".format(request.service_id),
                 "service_name": request.service_name,
@@ -975,6 +982,24 @@ def _load_address_map(path: Path):
         raise ValueError(f"invalid address map {path}: {exc}") from exc
 
 
+def _build_script_address_map(script, map_path, profile_path):
+    """Combine the explicit address map with optional profile name matches.
+
+    The numeric map is loaded first, so a profile can only fill entries the
+    explicit map does not already cover. Returns the merged map and the name
+    report, or none when no profile was supplied.
+    """
+
+    if map_path is None and profile_path is None:
+        raise ValueError("supply --address-map, --profile, or both")
+    address_map = _load_address_map(map_path) if map_path is not None else AddressMap()
+    name_report = None
+    if profile_path is not None:
+        name_map, name_report = load_profile_name_map(script, profile_path)
+        address_map = address_map.merged_with(name_map)
+    return address_map, name_report
+
+
 def _record_target(record) -> str:
     return "unmapped" if record.can_id is None else "0x{:03X}".format(record.can_id)
 
@@ -1005,6 +1030,41 @@ def _print_unmapped(plan) -> None:
         print(f"  {item.kind} {value} ({item.source_ecu}): no address map entry")
 
 
+def _print_name_report(report, profile_path: Path) -> None:
+    counts = report.counts()
+    print(f"Module profile: {profile_path}")
+    print(
+        "Name matches: {} matched, {} ambiguous, {} missing, {} unnamed "
+        "({} script ECUs)".format(
+            counts["matched"],
+            counts["ambiguous"],
+            counts["missing"],
+            counts["unnamed"],
+            counts["ecus"],
+        )
+    )
+    for entry in report.matched:
+        print(
+            "  {} {} -> 0x{:03X}".format(
+                entry.field, entry.value, entry.can_id
+            )
+        )
+    for entry in report.ambiguous:
+        print(
+            "  ambiguous {} {}: profile names {}".format(
+                entry.field,
+                entry.value,
+                ", ".join(entry.profile_names),
+            )
+        )
+    for entry in report.missing:
+        print(
+            "  no profile module named {} ({})".format(
+                entry.value, entry.field
+            )
+        )
+
+
 def _print_blocked(blocked) -> None:
     if not blocked:
         return
@@ -1020,13 +1080,26 @@ def _print_blocked(blocked) -> None:
 
 
 def _print_run_plan(
-    plan, script_path: Path, map_path: Path, address_map, blocked
+    plan,
+    script_path: Path,
+    map_path: Path | None,
+    address_map: AddressMap,
+    blocked,
+    profile_path: Path | None = None,
+    name_report: NameMapReport | None = None,
 ) -> None:
     print(f"Script: {script_path}")
     print(f"Docno: {plan.docno or '-'}")
     print(f"Title: {plan.title or '-'}")
     print(f"Type: {plan.script_type or '-'}")
-    print(f"Address map: {map_path} ({len(address_map)} entries)")
+    if map_path is not None:
+        print(
+            "Address map: {} ({} numeric entries)".format(
+                map_path, len(address_map)
+            )
+        )
+    if profile_path is not None and name_report is not None:
+        _print_name_report(name_report, profile_path)
     print(f"Read-only requests ({len(plan.records)}):")
     for record in plan.records:
         line = "  " + _record_line(record)
@@ -1090,8 +1163,17 @@ def _print_run_result(result: RunResult) -> None:
 
 
 def _run_script_payload(
-    script, script_path: Path, map_path: Path, address_map, plan, result, blocked
+    script,
+    script_path: Path,
+    map_path: Path | None,
+    address_map: AddressMap,
+    plan,
+    result,
+    blocked,
+    profile_path: Path | None = None,
+    name_report: NameMapReport | None = None,
 ) -> dict:
+    entries = address_map.to_dict()
     return {
         "script": {
             "path": str(script_path),
@@ -1100,8 +1182,15 @@ def _run_script_payload(
             "type": script.script_type,
         },
         "address_map": {
-            "path": str(map_path),
-            "entries": address_map.to_dict()["entries"],
+            "path": None if map_path is None else str(map_path),
+            "entries": entries["entries"],
+            "names": entries["names"],
+        },
+        "profile": None
+        if profile_path is None or name_report is None
+        else {
+            "path": str(profile_path),
+            "name_map": name_report.to_dict(),
         },
         "executed": result is not None,
         "dry_run": result is None or result.dry_run,
@@ -1111,7 +1200,13 @@ def _run_script_payload(
     }
 
 
-def _native_request_ids(plan: RunPlan) -> list:
+def native_request_ids(plan: RunPlan) -> list:
+    """Return the sorted request IDs a native run would need.
+
+    Raises ``ValueError`` when nothing is planned or an ID is outside the
+    native diagnostic range.
+    """
+
     planned = [
         record for record in plan.records if record.status == STATUS_PLANNED
     ]
@@ -1134,8 +1229,10 @@ def _native_request_ids(plan: RunPlan) -> list:
     return request_ids
 
 
-def _execute_run_plan(plan: RunPlan, timeout: float) -> RunResult:
-    request_ids = _native_request_ids(plan)
+def run_script_native(plan: RunPlan, timeout: float = 1.5) -> RunResult:
+    """Send a planned read-only script through the native DiCE transport."""
+
+    request_ids = native_request_ids(plan)
     from .dice_can import DiceCanTransport
     from .dice_rpc import DiceRpc
 
@@ -1152,14 +1249,17 @@ def _execute_run_plan(plan: RunPlan, timeout: float) -> RunResult:
 def cmd_diag_run_script(args: argparse.Namespace) -> int:
     script_path = Path(args.script)
     script = _load_script_plan(script_path)
-    map_path = Path(args.address_map)
-    address_map = _load_address_map(map_path)
+    map_path = Path(args.address_map) if args.address_map is not None else None
+    profile_path = Path(args.profile) if args.profile is not None else None
+    address_map, name_report = _build_script_address_map(
+        script, map_path, profile_path
+    )
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         raise ValueError("timeout must be a positive number of seconds")
 
     plan = build_run_plan(script, address_map)
     blocked = _blocked_services(script)
-    result = _execute_run_plan(plan, args.timeout) if args.execute else None
+    result = run_script_native(plan, args.timeout) if args.execute else None
 
     if args.json:
         print(
@@ -1172,6 +1272,8 @@ def cmd_diag_run_script(args: argparse.Namespace) -> int:
                     plan,
                     result,
                     blocked,
+                    profile_path,
+                    name_report,
                 ),
                 indent=2,
                 sort_keys=True,
@@ -1179,11 +1281,22 @@ def cmd_diag_run_script(args: argparse.Namespace) -> int:
             )
         )
     elif result is None:
-        _print_run_plan(plan, script_path, map_path, address_map, blocked)
+        _print_run_plan(
+            plan,
+            script_path,
+            map_path,
+            address_map,
+            blocked,
+            profile_path,
+            name_report,
+        )
     else:
         print(f"Script: {script_path}")
         print(f"Docno: {plan.docno or '-'}")
-        print(f"Address map: {map_path}")
+        if map_path is not None:
+            print(f"Address map: {map_path}")
+        if profile_path is not None and name_report is not None:
+            _print_name_report(name_report, profile_path)
         _print_unmapped(plan)
         _print_blocked(blocked)
         print()
@@ -1444,8 +1557,21 @@ def build_parser() -> argparse.ArgumentParser:
     diag_run.add_argument(
         "--address-map",
         type=Path,
-        required=True,
-        help="JSON map of logical ECU addresses to 11-bit physical CAN request IDs",
+        default=None,
+        help=(
+            "JSON map of logical ECU addresses to 11-bit physical CAN request "
+            "IDs; wins over a profile name match"
+        ),
+    )
+    diag_run.add_argument(
+        "--profile",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "saved module profile whose module names are matched to the "
+            "script's EcuName or EcuIdentifier"
+        ),
     )
     diag_run.add_argument(
         "--execute",

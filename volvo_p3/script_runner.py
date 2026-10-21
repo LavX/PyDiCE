@@ -5,6 +5,11 @@ the physical CAN identifier of the module. This module never guesses that
 translation. The caller supplies an :class:`AddressMap`, and a request whose
 logical address has no entry is reported as ``skipped_unmapped``.
 
+An :class:`AddressMap` can also hold name entries. They are only populated from
+an explicit saved profile, matched against the script's ``EcuName`` or
+``EcuIdentifier`` by exact normalized text. An ambiguous or absent name stays
+unmapped and is reported; nothing is fuzzy-matched.
+
 Safety rules enforced here, not trusted from the script:
 
 * Only the four read services from :mod:`volvo_p3.script_plan` (0x01, 0x09,
@@ -34,6 +39,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .protocol import VolvoFrame
@@ -74,6 +80,13 @@ STATUSES = (
     STATUS_SKIPPED_UNSUPPORTED,
     STATUS_ERROR,
 )
+
+NAME_MATCHED = "matched"
+NAME_AMBIGUOUS = "ambiguous"
+NAME_MISSING = "missing"
+NAME_UNNAMED = "unnamed"
+
+NAME_STATUSES = (NAME_MATCHED, NAME_AMBIGUOUS, NAME_MISSING, NAME_UNNAMED)
 
 DTC_STATUS_BITS = (
     "testFailed",
@@ -141,12 +154,25 @@ class AddressMap:
     Keys are the integer values the source writes in an ``EcuAddress`` or ``EcuType``
     property. A script node that has both is resolved by ``EcuAddress`` first,
     then ``EcuType``. Nothing is derived from the script itself.
+
+    ``names`` holds optional entries matched from a saved module profile. They
+    are consulted only after both numeric keys miss, and only for an exact
+    normalized match. The numeric entries always win.
     """
 
-    def __init__(self, addresses: Optional[Mapping[Any, Any]] = None):
+    def __init__(
+        self,
+        addresses: Optional[Mapping[Any, Any]] = None,
+        names: Optional[Mapping[Any, Any]] = None,
+    ):
         self._entries: Dict[int, int] = {}
-        if addresses is None:
-            return
+        self._names: Dict[str, int] = {}
+        if addresses is not None:
+            self._load_addresses(addresses)
+        if names is not None:
+            self._load_names(names)
+
+    def _load_addresses(self, addresses: Mapping[Any, Any]) -> None:
         if not isinstance(addresses, Mapping):
             raise AddressMapError(
                 "address map must be a JSON object of logical address to CAN ID"
@@ -161,20 +187,7 @@ class AddressMap:
                 can_id,
                 "CAN request ID for logical address {}".format(logical_value),
             )
-            if not 0 <= can_value <= MAX_CAN_ID:
-                raise AddressMapError(
-                    "CAN request ID {:#05x} for logical address {} is outside "
-                    "the 11-bit range 0x000..0x7FF".format(
-                        can_value, logical_value
-                    )
-                )
-            if can_value == FUNCTIONAL_REQUEST_ID:
-                raise AddressMapError(
-                    "CAN request ID 0x7DF is functional broadcast; logical "
-                    "address {} needs a physical request ID".format(
-                        logical_value
-                    )
-                )
+            self._check_can_id(can_value, "logical address {}".format(logical_value))
             if logical_value in self._entries and self._entries[logical_value] != can_value:
                 raise AddressMapError(
                     "logical address {} is mapped to both 0x{:03X} and 0x{:03X}".format(
@@ -185,12 +198,65 @@ class AddressMap:
                 )
             self._entries[logical_value] = can_value
 
+    def _load_names(self, names: Mapping[Any, Any]) -> None:
+        if not isinstance(names, Mapping):
+            raise AddressMapError(
+                "address names must be a JSON object of ECU name to CAN ID"
+            )
+        for name, can_id in names.items():
+            if not isinstance(name, str):
+                raise AddressMapError(
+                    "ECU name must be a string, got {!r}".format(name)
+                )
+            key = normalize_ecu_name(name)
+            if not key:
+                raise AddressMapError("ECU name must not be empty")
+            can_value = _parse_integer(
+                can_id, "CAN request ID for ECU name {!r}".format(name)
+            )
+            self._check_can_id(can_value, "ECU name {!r}".format(name))
+            if key in self._names and self._names[key] != can_value:
+                raise AddressMapError(
+                    "ECU name {!r} is mapped to both 0x{:03X} and 0x{:03X}".format(
+                        name, self._names[key], can_value
+                    )
+                )
+            self._names[key] = can_value
+
+    @staticmethod
+    def _check_can_id(can_value: int, what: str) -> None:
+        if not 0 <= can_value <= MAX_CAN_ID:
+            raise AddressMapError(
+                "CAN request ID {:#05x} for {} is outside "
+                "the 11-bit range 0x000..0x7FF".format(can_value, what)
+            )
+        if can_value == FUNCTIONAL_REQUEST_ID:
+            raise AddressMapError(
+                "CAN request ID 0x7DF is functional broadcast; {} needs a "
+                "physical request ID".format(what)
+            )
+
     @classmethod
     def from_mapping(cls, addresses: Mapping[Any, Any]) -> "AddressMap":
         return cls(addresses)
 
+    def merged_with(self, other: "AddressMap") -> "AddressMap":
+        """Return a new map; ``other`` fills gaps and conflicts raise."""
+
+        if not isinstance(other, AddressMap):
+            raise TypeError("other must be an AddressMap")
+        addresses: Dict[int, int] = dict(self._entries)
+        addresses.update(other._entries)
+        names: Dict[str, int] = dict(self._names)
+        names.update(other._names)
+        return AddressMap(addresses, names)
+
     def resolve(
-        self, ecu_address: Optional[int], ecu_type: Optional[int]
+        self,
+        ecu_address: Optional[int],
+        ecu_type: Optional[int],
+        ecu_name: Optional[str] = None,
+        ecu_identifier: Optional[str] = None,
     ) -> AddressMatch:
         candidates: List[Tuple[int, str]] = []
         if ecu_address is not None:
@@ -200,13 +266,29 @@ class AddressMap:
         for logical, kind in candidates:
             if logical in self._entries:
                 return AddressMatch(logical, kind, self._entries[logical])
-        if not candidates:
-            return AddressMatch(None, None, None)
-        logical, kind = candidates[0]
-        return AddressMatch(logical, kind, None)
+        for value, kind in (
+            (ecu_name, "ecu_name"),
+            (ecu_identifier, "ecu_identifier"),
+        ):
+            key = normalize_ecu_name(value)
+            if key and key in self._names:
+                return AddressMatch(None, kind, self._names[key])
+        if candidates:
+            logical, kind = candidates[0]
+            return AddressMatch(logical, kind, None)
+        for value, kind in (
+            (ecu_name, "ecu_name"),
+            (ecu_identifier, "ecu_identifier"),
+        ):
+            if value and value.strip():
+                return AddressMatch(None, kind, None)
+        return AddressMatch(None, None, None)
 
     def get(self, logical_address: int) -> Optional[int]:
         return self._entries.get(logical_address)
+
+    def get_name(self, name: str) -> Optional[int]:
+        return self._names.get(normalize_ecu_name(name))
 
     def __contains__(self, logical_address: object) -> bool:
         return logical_address in self._entries
@@ -220,6 +302,9 @@ class AddressMap:
     def items(self) -> Tuple[Tuple[int, int], ...]:
         return tuple(sorted(self._entries.items()))
 
+    def name_items(self) -> Tuple[Tuple[str, int], ...]:
+        return tuple(sorted(self._names.items()))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "entries": [
@@ -230,8 +315,30 @@ class AddressMap:
                     "can_id_hex": _optional_can_id(can_id),
                 }
                 for logical, can_id in self.items()
-            ]
+            ],
+            "names": [
+                {
+                    "name": name,
+                    "can_id": can_id,
+                    "can_id_hex": _optional_can_id(can_id),
+                }
+                for name, can_id in self.name_items()
+            ],
         }
+
+
+def normalize_ecu_name(value: Optional[str]) -> str:
+    """Fold an ECU name for exact comparison.
+
+    Case is folded and every character that is not a letter or digit is
+    removed; no aliases or partial matches are applied. ``"D.I.M."`` and
+    ``"dim"`` both become ``"DIM"``, while ``"Driver Information Module"`` does
+    not.
+    """
+
+    if not value:
+        return ""
+    return "".join(char for char in str(value).upper() if char.isalnum())
 
 
 def parse_address_map(document: Any) -> AddressMap:
@@ -296,12 +403,218 @@ def _parse_integer(value: Any, what: str) -> int:
 
 
 @dataclass(frozen=True)
+class NameMapEntry:
+    """One script ECU considered against a saved profile's module names.
+
+    ``status`` is one of :data:`NAME_STATUSES`. ``field`` names the script
+    property the compared text came from (``ecu_name`` or ``ecu_identifier``),
+    or None when the node carries neither.
+    """
+
+    status: str
+    value: Optional[str]
+    normalized: str
+    field: Optional[str] = None
+    can_id: Optional[int] = None
+    profile_names: Tuple[str, ...] = ()
+    detail: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "field": self.field,
+            "value": self.value,
+            "normalized": self.normalized,
+            "can_id": self.can_id,
+            "can_id_hex": _optional_can_id(self.can_id),
+            "profile_names": list(self.profile_names),
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class NameMapReport:
+    """Outcome of matching every script ECU name against one profile."""
+
+    entries: Tuple[NameMapEntry, ...] = ()
+
+    def _with_status(self, status: str) -> Tuple[NameMapEntry, ...]:
+        return tuple(entry for entry in self.entries if entry.status == status)
+
+    @property
+    def matched(self) -> Tuple[NameMapEntry, ...]:
+        return self._with_status(NAME_MATCHED)
+
+    @property
+    def ambiguous(self) -> Tuple[NameMapEntry, ...]:
+        return self._with_status(NAME_AMBIGUOUS)
+
+    @property
+    def missing(self) -> Tuple[NameMapEntry, ...]:
+        return self._with_status(NAME_MISSING)
+
+    @property
+    def unnamed(self) -> Tuple[NameMapEntry, ...]:
+        return self._with_status(NAME_UNNAMED)
+
+    def counts(self) -> Dict[str, int]:
+        counts = {status: 0 for status in NAME_STATUSES}
+        for entry in self.entries:
+            counts[entry.status] = counts.get(entry.status, 0) + 1
+        counts["ecus"] = len(self.entries)
+        return counts
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "counts": self.counts(),
+            "entries": [entry.to_dict() for entry in self.entries],
+        }
+
+
+def _profile_name_index(
+    targets: Iterable[Any],
+) -> Dict[str, List[Tuple[str, int]]]:
+    """Group profile modules by normalized name, keeping every original."""
+
+    index: Dict[str, List[Tuple[str, int]]] = {}
+    for target in targets:
+        name = getattr(target, "name", None)
+        request_id = getattr(target, "request_id", None)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("profile module names must not be empty")
+        if isinstance(request_id, bool) or not isinstance(request_id, int):
+            raise ValueError(
+                "profile module {!r} has no integer request ID".format(name)
+            )
+        key = normalize_ecu_name(name)
+        if not key:
+            raise ValueError("profile module {!r} has an empty name".format(name))
+        entries = index.setdefault(key, [])
+        if all(entry[1] != request_id for entry in entries):
+            entries.append((name.strip(), request_id))
+    return index
+
+
+def build_profile_name_map(
+    script: DiagnosticScript, targets: Iterable[Any]
+) -> Tuple[AddressMap, NameMapReport]:
+    """Match script ECU names to saved-profile module names.
+
+    Only exact normalized text counts. A name that two profile modules claim
+    with different request IDs is ambiguous; it is not mapped. A name with no
+    profile entry is reported as missing. ``EcuName`` is tried first, then
+    ``EcuIdentifier``.
+
+    Returns a name-only :class:`AddressMap` and the report. Merge the map into
+    an explicit numeric map with :meth:`AddressMap.merged_with`; the numeric
+    entries still resolve first.
+    """
+
+    if not isinstance(script, DiagnosticScript):
+        raise TypeError("script must be a DiagnosticScript")
+
+    index = _profile_name_index(targets)
+    names: Dict[str, int] = {}
+    entries: List[NameMapEntry] = []
+
+    for plan in script.ecus:
+        candidates: List[Tuple[str, str]] = []
+        if plan.ecu_name and plan.ecu_name.strip():
+            candidates.append((plan.ecu_name.strip(), "ecu_name"))
+        if plan.ecu_identifier and plan.ecu_identifier.strip():
+            candidates.append((plan.ecu_identifier.strip(), "ecu_identifier"))
+
+        if not candidates:
+            entries.append(
+                NameMapEntry(
+                    status=NAME_UNNAMED,
+                    value=None,
+                    normalized="",
+                    detail="script node carries no EcuName or EcuIdentifier",
+                )
+            )
+            continue
+
+        matched: Optional[NameMapEntry] = None
+        ambiguous: Optional[NameMapEntry] = None
+        for value, field in candidates:
+            key = normalize_ecu_name(value)
+            profile_entries = index.get(key, [])
+            if not profile_entries:
+                continue
+            unique_ids = {request_id for _, request_id in profile_entries}
+            if len(unique_ids) == 1:
+                can_id = next(iter(unique_ids))
+                matched = NameMapEntry(
+                    status=NAME_MATCHED,
+                    value=value,
+                    normalized=key,
+                    field=field,
+                    can_id=can_id,
+                    profile_names=tuple(name for name, _ in profile_entries),
+                    detail="matched {}".format(field),
+                )
+                break
+            if ambiguous is None:
+                ambiguous = NameMapEntry(
+                    status=NAME_AMBIGUOUS,
+                    value=value,
+                    normalized=key,
+                    field=field,
+                    profile_names=tuple(name for name, _ in profile_entries),
+                    detail="profile has {} modules named {!r} with different "
+                    "request IDs".format(len(unique_ids), key),
+                )
+
+        if matched is not None and matched.can_id is not None:
+            names[matched.normalized] = matched.can_id
+            entries.append(matched)
+        elif ambiguous is not None:
+            entries.append(ambiguous)
+        else:
+            value, field = candidates[0]
+            entries.append(
+                NameMapEntry(
+                    status=NAME_MISSING,
+                    value=value,
+                    normalized=normalize_ecu_name(value),
+                    field=field,
+                    detail="no profile module named {!r}".format(value),
+                )
+            )
+
+    return AddressMap(names=names), NameMapReport(tuple(entries))
+
+
+def load_profile_name_map(
+    script: DiagnosticScript, profile_path: Any
+) -> Tuple[AddressMap, NameMapReport]:
+    """Load a saved module profile and match it to one script.
+
+    A missing or unreadable profile raises ``ValueError`` with the path in the
+    message, so the CLI and the TUI can report it the same way.
+    """
+
+    from .module_scan import load_module_profile
+
+    path = Path(profile_path)
+    try:
+        targets = load_module_profile(path)
+    except FileNotFoundError as exc:
+        raise ValueError("module profile not found: {}".format(path)) from exc
+    except (OSError, ValueError) as exc:
+        raise ValueError("invalid module profile {}: {}".format(path, exc)) from exc
+    return build_profile_name_map(script, targets)
+
+
+@dataclass(frozen=True)
 class LogicalAddress:
     """One unmapped script logical address, reported instead of guessed."""
 
     kind: str
     value: Optional[int]
     source_ecu: str
+    name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -309,6 +622,7 @@ class LogicalAddress:
             "value": self.value,
             "value_hex": _optional_hex(self.value),
             "source_ecu": self.source_ecu,
+            "name": self.name,
         }
 
 
@@ -332,6 +646,8 @@ class RequestRecord:
     ecu_address: Optional[int] = None
     ecu_type: Optional[int] = None
     tester_address: Optional[int] = None
+    ecu_name: Optional[str] = None
+    ecu_identifier: Optional[str] = None
     detail: Optional[str] = None
     transmitted: bool = False
     response_id: Optional[int] = None
@@ -369,6 +685,8 @@ class RequestRecord:
             "ecu_type": self.ecu_type,
             "tester_address": self.tester_address,
             "tester_address_hex": _optional_hex(self.tester_address),
+            "ecu_name": self.ecu_name,
+            "ecu_identifier": self.ecu_identifier,
             "service_id": self.service_id,
             "service_hex": "0x{:02X}".format(self.service_id),
             "service_name": self.service_name,
@@ -466,9 +784,19 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
     seen_unmapped = set()
 
     for index, request in enumerate(script.read_only_requests(), 1):
-        match = address_map.resolve(request.ecu_address, request.ecu_type)
+        match = address_map.resolve(
+            request.ecu_address,
+            request.ecu_type,
+            request.ecu_name,
+            request.ecu_identifier,
+        )
         request_bytes, byte_note = _request_bytes(request)
-        source_ecu = _source_label(request.ecu_address, request.ecu_type)
+        source_ecu = _source_label(
+            request.ecu_address,
+            request.ecu_type,
+            request.ecu_name,
+            request.ecu_identifier,
+        )
         detail_parts: List[str] = []
 
         if not request_bytes:
@@ -501,7 +829,12 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
             detail_parts.append(
                 "no address map entry for {}".format(source_ecu)
             )
-            key = (match.logical_kind, match.logical_address)
+            key = (
+                match.logical_kind,
+                match.logical_address,
+                request.ecu_name,
+                request.ecu_identifier,
+            )
             if key not in seen_unmapped:
                 seen_unmapped.add(key)
                 unmapped.append(
@@ -509,6 +842,7 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
                         kind=match.logical_kind or "unknown",
                         value=match.logical_address,
                         source_ecu=source_ecu,
+                        name=request.ecu_name or request.ecu_identifier,
                     )
                 )
         elif len(request_bytes) > MAX_SINGLE_FRAME_BYTES:
@@ -537,6 +871,8 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
                 ecu_address=request.ecu_address,
                 ecu_type=request.ecu_type,
                 tester_address=request.tester_address,
+                ecu_name=request.ecu_name,
+                ecu_identifier=request.ecu_identifier,
                 detail="; ".join(detail_parts) or None,
             )
         )
@@ -1076,13 +1412,20 @@ def _request_bytes(request: ReadRequest) -> Tuple[bytes, Optional[str]]:
 
 
 def _source_label(
-    ecu_address: Optional[int], ecu_type: Optional[int]
+    ecu_address: Optional[int],
+    ecu_type: Optional[int],
+    ecu_name: Optional[str] = None,
+    ecu_identifier: Optional[str] = None,
 ) -> str:
     labels: List[str] = []
     if ecu_address is not None:
         labels.append("EcuAddress 0x{:X}".format(ecu_address))
     if ecu_type is not None:
         labels.append("EcuType {}".format(ecu_type))
+    if ecu_name:
+        labels.append("EcuName {}".format(ecu_name))
+    if ecu_identifier:
+        labels.append("EcuIdentifier {}".format(ecu_identifier))
     return " / ".join(labels) if labels else "unknown ECU"
 
 

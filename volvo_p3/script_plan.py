@@ -5,10 +5,10 @@ rooted at ``script``. The archive reaches the client as
 ``ScriptContent.XmlDataCompressed``; the entry name is a document id, not a
 file name, so it is not used to select the body.
 
-Only the addressing and DTC-list parts of the format are modelled here.
-Parsing never executes a script and never talks to a car. ``read_only_requests``
-is the only method that produces request data, and it drops every service that
-is not a known read.
+Only the addressing, ECU identity and DTC-list parts of the format are modelled
+here. Parsing never executes a script and never talks to a car.
+``read_only_requests`` is the only method that produces request data, and it
+drops every service that is not a known read.
 
 Service ids inside a script are written as hexadecimal bytes without a prefix:
 a ClearDtc script carries ``14``, a ReadDTCs script carries ``19`` and ``22``.
@@ -81,6 +81,10 @@ class EcuPlan:
     ``service_ids`` holds every service the node names, in document order and
     deduplicated. ``requests`` and ``responses`` keep the raw script values;
     they are often empty slots or bindings rather than bytes.
+
+    ``ecu_name`` and ``ecu_identifier`` are the optional textual identities a
+    script node can carry. They are kept verbatim; nothing is derived from them
+    here.
     """
 
     mode: Optional[str]
@@ -90,6 +94,8 @@ class EcuPlan:
     service_ids: Tuple[int, ...]
     requests: Tuple[str, ...]
     responses: Tuple[str, ...]
+    ecu_name: Optional[str] = None
+    ecu_identifier: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +125,8 @@ class ReadRequest:
     tester_address: Optional[int]
     service_id: int
     request: Optional[str]
+    ecu_name: Optional[str] = None
+    ecu_identifier: Optional[str] = None
 
     @property
     def service_name(self) -> str:
@@ -163,6 +171,8 @@ class DiagnosticScript:
                             tester_address=plan.tester_address,
                             service_id=service_id,
                             request=value,
+                            ecu_name=plan.ecu_name,
+                            ecu_identifier=plan.ecu_identifier,
                         )
                     )
         return tuple(result)
@@ -396,6 +406,8 @@ def _ecu_plans(root: ElementTree.Element) -> Iterable[EcuPlan]:
             service_ids=tuple(service_ids),
             requests=tuple(_field_values(element, "Request")),
             responses=tuple(_field_values(element, "Response")),
+            ecu_name=_first(_field_values(element, "EcuName")),
+            ecu_identifier=_first(_field_values(element, "EcuIdentifier")),
         )
 
 

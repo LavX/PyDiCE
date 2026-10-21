@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from volvo_p3.diagnostics import build_report
+from volvo_p3.protocol import VolvoFrame
+from volvo_p3.script_runner import run_plan
 from volvo_p3.tui import (
     DEFAULT_DIAG_CATALOG,
     NativeScanResult,
@@ -16,10 +18,13 @@ from volvo_p3.tui import (
     build_live_diag_lines,
     build_live_scan_options,
     build_script_plan_view,
+    build_script_run_view,
     default_live_diag_profile_path,
     format_diag_dtc_lines,
     format_diag_fault_lines,
     format_diag_network_lines,
+    format_script_run_result,
+    format_script_run_view,
     diag_dtc_overview_lines,
     diag_fault_trace_lines,
     diag_network_status_lines,
@@ -33,7 +38,34 @@ COMPRESSED_CATALOG = FIXTURES / "diag_catalog.json.gz"
 SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
 SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
 SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
+SCRIPT_NAMED = FIXTURES / "script_plan_named.xml"
+PROFILE_NAMED = FIXTURES / "profile_named.json"
 MISSING = FIXTURES / "does-not-exist.json"
+
+
+def script_dtc_response(request_id=0x7E0):
+    payload = bytes.fromhex("59 02 FF 03 42 11 09")
+    return VolvoFrame(
+        request_id + 8,
+        bytes((len(payload),)) + payload + bytes(8 - 1 - len(payload)),
+        False,
+    )
+
+
+class FakeScriptTransport:
+    """Record script-run frames and return canned responses in order."""
+
+    def __init__(self, responses=()):
+        self.responses = list(responses)
+        self.sent = []
+
+    def send(self, frame):
+        self.sent.append(frame)
+
+    def recv(self, timeout=1.0):
+        if self.responses:
+            return self.responses.pop(0)
+        return None
 
 
 def scan_with_dtcs():
@@ -339,6 +371,111 @@ class DiagnosticScriptTests(unittest.TestCase):
         self.assertEqual(blank, ["error: enter a diagnostic script ZIP or XML path"])
 
 
+class ScriptRunTests(unittest.TestCase):
+    def test_plan_only_view_shows_matches_and_unmapped(self):
+        view = build_script_run_view(SCRIPT_NAMED, PROFILE_NAMED)
+
+        lines = format_script_run_view(view)
+
+        self.assertFalse(view.execute)
+        self.assertIn(
+            "profile: {} (matched 2, ambiguous 1, missing 1, unnamed 0)".format(
+                PROFILE_NAMED
+            ),
+            lines,
+        )
+        self.assertIn(
+            "  ambiguous ecu_name GWM: profile names GWM, G.W.M", lines
+        )
+        self.assertIn("  no profile module named ABS (ecu_name)", lines)
+        self.assertIn("  matched ecu_name ECM -> 0x7E0", lines)
+        self.assertIn("  matched ecu_identifier DIM -> 0x720", lines)
+        self.assertTrue(
+            any("-> 0x7E0" in line and "service 0x19" in line for line in lines)
+        )
+        self.assertTrue(
+            any("-> 0x720" in line and "service 0x22" in line for line in lines)
+        )
+        self.assertIn("unmapped: 2", lines)
+        self.assertTrue(any("ecu_address 0x29" in line for line in lines))
+        self.assertTrue(any("ecu_address 0x32" in line for line in lines))
+        self.assertEqual(lines[-1], "mode: plan only; no CAN frames were sent")
+
+    def test_plan_only_needs_a_map_or_profile(self):
+        with self.assertRaises(ValueError):
+            build_script_run_view(SCRIPT_XML, "", "")
+
+    def test_missing_script_and_profile_are_reported(self):
+        with self.assertRaises(FileNotFoundError):
+            build_script_run_view(MISSING, PROFILE_NAMED)
+        with self.assertRaisesRegex(ValueError, "module profile not found"):
+            build_script_run_view(SCRIPT_XML, MISSING)
+
+    def test_execute_defaults_to_plan_only(self):
+        app = VolvoTuiApp()
+        calls = []
+
+        def execute(plan, timeout):
+            calls.append(plan)
+
+        with mock.patch.object(app, "_execute_script_plan", execute):
+            lines = app._script_run(
+                {
+                    "script_run_script": str(SCRIPT_NAMED),
+                    "script_run_profile": str(PROFILE_NAMED),
+                    "script_run_map": "",
+                    "script_run_timeout": "1.5",
+                    "script_run_execute": "no",
+                }
+            )
+
+        self.assertEqual(calls, [])
+        self.assertEqual(lines[-1], "mode: plan only; no CAN frames were sent")
+
+    def test_execute_yes_runs_through_fake_transport(self):
+        app = VolvoTuiApp()
+        transport = FakeScriptTransport([script_dtc_response()])
+
+        def execute(plan, timeout):
+            return run_plan(plan, transport, timeout=timeout)
+
+        with mock.patch.object(app, "_execute_script_plan", execute):
+            lines = app._script_run(
+                {
+                    "script_run_script": str(SCRIPT_NAMED),
+                    "script_run_profile": str(PROFILE_NAMED),
+                    "script_run_map": "",
+                    "script_run_timeout": "0.02",
+                    "script_run_execute": "yes",
+                }
+            )
+
+        self.assertEqual(
+            [frame.arbitration_id for frame in transport.sent], [0x7E0, 0x720]
+        )
+        self.assertIn("mode: execute", lines)
+        self.assertTrue(
+            any(line.startswith("run: transmitted=2 responses=1") for line in lines)
+        )
+        self.assertTrue(any("P0342" in line for line in lines))
+        self.assertFalse(any("mode: plan only" in line for line in lines))
+
+    def test_action_reports_a_missing_script(self):
+        app = VolvoTuiApp()
+
+        lines = app._script_run(
+            {
+                "script_run_script": str(MISSING),
+                "script_run_profile": "",
+                "script_run_map": "",
+            }
+        )
+
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("error:"))
+        self.assertIn("script not found", lines[0])
+
+
 class LiveDiagReadTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -609,6 +746,7 @@ class DiagMenuTests(unittest.TestCase):
                 "Fault Trace",
                 "Network Status",
                 "Script Plan",
+                "Run Script",
             ],
         )
         self.assertEqual(
@@ -622,6 +760,17 @@ class DiagMenuTests(unittest.TestCase):
             [field.name for field in diag.actions[2].fields],
             ["diag_scan", "diag_catalog"],
         )
+        self.assertEqual(
+            [field.name for field in diag.actions[6].fields],
+            [
+                "script_run_script",
+                "script_run_profile",
+                "script_run_map",
+                "script_run_timeout",
+                "script_run_execute",
+            ],
+        )
+        self.assertEqual(diag.actions[6].fields[4].default, "no")
 
     def test_actions_return_error_lines_instead_of_raising(self):
         app = VolvoTuiApp()
@@ -633,6 +782,14 @@ class DiagMenuTests(unittest.TestCase):
             (app._diag_fault_trace, {"diag_scan": missing, "diag_catalog": ""}),
             (app._diag_network_status, {"diag_scan": missing}),
             (app._script_plan_plan, {"script_plan": missing}),
+            (
+                app._script_run,
+                {
+                    "script_run_script": missing,
+                    "script_run_profile": "",
+                    "script_run_map": "",
+                },
+            ),
         )
         for handler, values in cases:
             with self.subTest(handler=handler.__name__):
