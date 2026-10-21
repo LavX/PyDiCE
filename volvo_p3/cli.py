@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
+import re
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from .can_transport import CanBusConfig, PythonCanTransport
+from .diagnostics import build_report, fault_trace, network_status
 from .dice_commands import CATEGORIES, iter_commands
 from .dice_installer import extract_setup_dice
 from .dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
@@ -25,6 +29,20 @@ from .protocol import (
     parse_dtc_response,
 )
 from .tui import run_tui
+from .vida_catalog import (
+    SCHEMA_NAME as VIDA_CATALOG_SCHEMA,
+    SCHEMA_VERSION as VIDA_CATALOG_VERSION,
+    CatalogError,
+    load_catalog,
+    normalize_dtc_code,
+)
+from .vida_script import (
+    VidaScriptError,
+    classify_service,
+    is_read_only_service,
+    parse_script_xml,
+    parse_script_zip,
+)
 
 
 def add_bus_args(parser: argparse.ArgumentParser) -> None:
@@ -305,6 +323,635 @@ def cmd_extract_dice_installer(args: argparse.Namespace) -> int:
     return 0
 
 
+# VIDA read-only commands ---------------------------------------------------
+#
+# These commands only read files that are already on disk. They do not open a
+# CAN channel, contact a vehicle, execute a VIDA script, or write to the VIDA
+# image. The catalog and script modules own the parsing rules; this layer keeps
+# the text output and the JSON envelope stable.
+
+
+def _load_vida_catalog(path: Path):
+    if not path.exists():
+        raise ValueError(f"catalog not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"catalog is not a file: {path}")
+    try:
+        return load_catalog(path)
+    except CatalogError as exc:
+        raise ValueError(f"invalid catalog {path}: {exc}") from exc
+    except UnicodeError as exc:
+        raise ValueError(f"catalog is not valid UTF-8: {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"cannot read catalog {path}: {exc}") from exc
+
+
+def _load_json_object(path: Path, kind: str) -> dict:
+    if not path.exists():
+        raise ValueError(f"{kind} not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"{kind} is not a file: {path}")
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            document = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{kind} is not valid JSON: {path}: {exc.msg} "
+            f"(line {exc.lineno}, column {exc.colno})"
+        ) from exc
+    except UnicodeError as exc:
+        raise ValueError(f"{kind} is not valid UTF-8: {path}: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"cannot read {kind} {path}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ValueError(f"{kind} must be a JSON object: {path}")
+    return document
+
+
+def _parse_vehicle_profile(value):
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        raise ValueError("vehicle profile is empty")
+    if text.startswith("{"):
+        try:
+            document = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "vehicle profile is not valid JSON: {} (line {}, column {})".format(
+                    exc.msg, exc.lineno, exc.colno
+                )
+            ) from exc
+        if not isinstance(document, dict):
+            raise ValueError("vehicle profile must be a JSON object")
+        return document
+    path = Path(text)
+    if not path.exists():
+        raise ValueError(
+            f"vehicle profile not found: {text} "
+            "(pass inline JSON or a JSON file)"
+        )
+    return _load_json_object(path, "vehicle profile")
+
+
+def _catalog_report_mapping(catalog) -> dict:
+    """Translate a VIDA catalog into the shape diagnostics.build_report reads.
+
+    Entries with an ECU label are scoped to that module. A seven-character
+    VIDA code carries the two-digit failure type after the five-character DTC,
+    so the same text is also registered under the ``CODE-XX`` key that the
+    diagnostic view looks up. No text is generated here; an ambiguous key is
+    dropped instead of picking one of the catalog's rows.
+    """
+
+    global_dtcs: dict = {}
+    module_dtcs: dict = {}
+    conflicts = []
+
+    def add(index, code, text):
+        key = code.strip().upper()
+        existing = index.get(key)
+        if existing is not None and existing != text:
+            conflicts.append((index, key))
+            return
+        index[key] = text
+
+    for entry in catalog.dtc_descriptions:
+        text = entry.long_text or entry.short_text
+        if not text:
+            continue
+        index = (
+            module_dtcs.setdefault(entry.ecu.strip().upper(), {})
+            if entry.ecu
+            else global_dtcs
+        )
+        codes = [entry.code]
+        if len(entry.code) == 7:
+            codes.append("{}-{}".format(entry.code[:5], entry.code[5:]))
+        for code in codes:
+            add(index, code, text)
+
+    for index, key in conflicts:
+        index.pop(key, None)
+
+    return {
+        "dtcs": global_dtcs,
+        "modules": {
+            name: index for name, index in module_dtcs.items() if index
+        },
+    }
+
+
+def _catalog_source_dict(source) -> dict:
+    return {
+        "kind": source.kind,
+        "generated_at": source.generated_at,
+        "image": source.image,
+        "extractor": source.extractor,
+        "language": source.language,
+        "notes": list(source.notes),
+        "databases": [
+            {"name": item.name, "path": item.path, "sha256": item.sha256}
+            for item in source.databases
+        ],
+    }
+
+
+def _catalog_summary(catalog, path: Path) -> dict:
+    return {
+        "path": str(path),
+        "schema": VIDA_CATALOG_SCHEMA,
+        "version": VIDA_CATALOG_VERSION,
+        "source": _catalog_source_dict(catalog.source),
+        "counts": {
+            "dtc_descriptions": len(catalog.dtc_descriptions),
+            "timing": len(catalog.timing),
+            "profiles": len(catalog.profiles),
+            "scripts": len(catalog.scripts),
+        },
+    }
+
+
+def _dtc_description_dict(entry) -> dict:
+    return {
+        "code": entry.code,
+        "ecu": entry.ecu,
+        "long_text": entry.long_text,
+        "short_text": entry.short_text,
+        "symptoms": list(entry.symptoms),
+        "causes": list(entry.causes),
+        "language": entry.language,
+        "source": entry.source,
+    }
+
+
+def _print_catalog(catalog, path: Path) -> None:
+    source = catalog.source
+    print(f"Catalog: {path}")
+    print(f"Schema: {VIDA_CATALOG_SCHEMA} version {VIDA_CATALOG_VERSION}")
+    print(f"Source kind: {source.kind}")
+    if source.generated_at:
+        print(f"Generated: {source.generated_at}")
+    if source.image:
+        print(f"Image: {source.image}")
+    if source.extractor:
+        print(f"Extractor: {source.extractor}")
+    if source.language:
+        print(f"Language: {source.language}")
+    print(f"Databases: {len(source.databases)}")
+    for database in source.databases:
+        print(f"  {database.name}  {database.path}")
+    if source.notes:
+        print("Notes:")
+        for note in source.notes:
+            print(f"  - {note}")
+    print("Counts:")
+    print(f"  DTC descriptions: {len(catalog.dtc_descriptions)}")
+    print(f"  Timing rows: {len(catalog.timing)}")
+    print(f"  Profiles: {len(catalog.profiles)}")
+    print(f"  Scripts: {len(catalog.scripts)}")
+
+
+def _print_catalog_lookup(entry, code: str) -> None:
+    print(f"DTC {code}:")
+    print(f"  ECU: {entry.ecu or 'global'}")
+    if entry.long_text:
+        print(f"  Long: {entry.long_text}")
+    if entry.short_text:
+        print(f"  Short: {entry.short_text}")
+    if entry.symptoms:
+        print("  Symptoms:")
+        for symptom in entry.symptoms:
+            print(f"    - {symptom}")
+    if entry.causes:
+        print("  Causes:")
+        for cause in entry.causes:
+            print(f"    - {cause}")
+    if entry.language:
+        print(f"  Language: {entry.language}")
+    if entry.source:
+        print(f"  Source: {entry.source}")
+
+
+def cmd_vida_catalog(args: argparse.Namespace) -> int:
+    path = Path(args.catalog)
+    catalog = _load_vida_catalog(path)
+
+    normalized = None
+    entry = None
+    if args.code:
+        normalized = normalize_dtc_code(args.code)
+        if normalized is None:
+            print(f"not a diagnostic trouble code: {args.code}", file=sys.stderr)
+            return 1
+        entry = catalog.lookup_dtc(normalized)
+
+    if args.json:
+        payload = _catalog_summary(catalog, path)
+        if normalized is not None:
+            payload["lookup"] = {
+                "code": normalized,
+                "found": entry is not None,
+                "description": _dtc_description_dict(entry) if entry else None,
+            }
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+    else:
+        _print_catalog(catalog, path)
+        if normalized is not None and entry is not None:
+            print()
+            _print_catalog_lookup(entry, normalized)
+
+    if normalized is not None and entry is None:
+        print(f"no catalog description for {normalized}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _format_id(value) -> str:
+    return "-" if value is None else "0x{:X}".format(value)
+
+
+def _format_byte(value) -> str:
+    return "-" if value is None else "0x{:02X}".format(value)
+
+
+def _format_dtc(code: str, failure_type) -> str:
+    if failure_type is None:
+        return code
+    return f"{code}-{failure_type:02X}"
+
+
+def _print_report_modules(report) -> None:
+    if not report.modules:
+        print("Modules: none")
+        return
+    print(f"Modules ({report.module_count}):")
+    for module in report.modules:
+        ids = "{} -> {}".format(
+            _format_id(module.request_id), _format_id(module.response_id)
+        )
+        print(
+            f"  {module.name:10s} {ids:17s} status={module.status:16s} "
+            f"dtcs={module.dtc_count}"
+        )
+
+
+def _print_report_network(report) -> None:
+    network = network_status(report)
+    print(
+        "Network: {}/{} responders ({:.0%})".format(
+            network.responder_count, network.total_modules, network.coverage_ratio
+        )
+    )
+    print(f"  responders: {', '.join(network.responders) or '-'}")
+    print(
+        "  no response ({}): {}".format(
+            len(network.no_response), ", ".join(network.no_response) or "-"
+        )
+    )
+    print(
+        "  incomplete ({}): {}".format(
+            len(network.incomplete), ", ".join(network.incomplete) or "-"
+        )
+    )
+    print(
+        "  negative response ({}): {}".format(
+            len(network.negative_response),
+            ", ".join(network.negative_response) or "-",
+        )
+    )
+    print(
+        "  other ({}): {}".format(
+            len(network.other), ", ".join(network.other) or "-"
+        )
+    )
+    print(f"  coverage: {network.coverage_note}")
+
+
+def _print_report_faults(report) -> None:
+    groups = fault_trace(report)
+    if not groups:
+        print("Fault trace: none")
+        return
+    print("Fault trace:")
+    for group in groups:
+        print(f"  {group.module}  {group.status} ({group.count})")
+        for dtc in group.dtcs:
+            status_byte = (
+                dtc.effective_status_byte
+                if dtc.effective_status_byte is not None
+                else dtc.status_byte
+            )
+            line = "    {}  status={}".format(
+                _format_dtc(dtc.code, dtc.failure_type),
+                _format_byte(status_byte),
+            )
+            if dtc.description:
+                line += f"  {dtc.description}"
+            print(line)
+
+
+def _print_report_dtcs(report) -> None:
+    records = [
+        (module, dtc) for module in report.modules for dtc in module.dtcs
+    ]
+    if not records:
+        print("DTCs: none")
+        return
+    print(f"DTCs ({len(records)}):")
+    for module, dtc in records:
+        print(
+            "  {:<10s} {:<12s} {:<10s} {}".format(
+                module.name,
+                _format_dtc(dtc.code, dtc.failure_type),
+                dtc.classification,
+                dtc.description or "-",
+            )
+        )
+
+
+def _print_report(report, path: Path, view: str, catalog_loaded: bool) -> None:
+    print(f"Scan: {report.name or path}")
+    if report.scan_status:
+        print(f"Status: {report.scan_status}")
+    if report.scope:
+        print(f"Scope: {report.scope}")
+    if report.vehicle:
+        vehicle = ", ".join(
+            f"{key}={report.vehicle[key]}" for key in sorted(report.vehicle)
+        )
+        print(f"Vehicle: {vehicle}")
+    print(
+        "Modules: {}  DTCs: {}  Described: {}  Current faults: {}".format(
+            report.module_count,
+            report.dtc_count,
+            report.described_dtc_count,
+            report.current_fault_count,
+        )
+    )
+    if not catalog_loaded:
+        print("Catalog: not loaded; DTC descriptions are unavailable")
+    if view == "all":
+        print()
+        _print_report_modules(report)
+    if view in ("all", "network"):
+        print()
+        _print_report_network(report)
+    if view in ("all", "faults"):
+        print()
+        _print_report_faults(report)
+    if view == "dtcs":
+        print()
+        _print_report_dtcs(report)
+
+
+def _report_payload(report, view: str) -> dict:
+    full = report.to_dict(include_raw=False)
+    payload = {
+        "view": view,
+        "name": report.name,
+        "scan_status": report.scan_status,
+        "started_at": report.started_at,
+        "finished_at": report.finished_at,
+        "scope": report.scope,
+        "coverage_note": report.coverage_note,
+        "vehicle": full["vehicle"],
+        "counts": full["counts"],
+    }
+    if view in ("all", "network"):
+        payload["network"] = network_status(report).to_dict()
+    if view in ("all", "faults"):
+        payload["fault_trace"] = [
+            group.to_dict(include_raw=False) for group in fault_trace(report)
+        ]
+    if view == "all":
+        payload["modules"] = [
+            module.to_dict(include_raw=False) for module in report.modules
+        ]
+    if view == "dtcs":
+        payload["dtcs"] = [
+            dtc.to_dict(include_raw=False)
+            for module in report.modules
+            for dtc in module.dtcs
+        ]
+    return payload
+
+
+def cmd_vida_report(args: argparse.Namespace) -> int:
+    path = Path(args.scan)
+    scan = _load_json_object(path, "scan report")
+    catalog = _load_vida_catalog(Path(args.catalog)) if args.catalog else None
+    vehicle = _parse_vehicle_profile(args.vehicle)
+    catalog_mapping = _catalog_report_mapping(catalog) if catalog else None
+    try:
+        report = build_report(scan, catalog=catalog_mapping, vehicle=vehicle)
+    except TypeError as exc:
+        raise ValueError(f"invalid scan report {path}: {exc}") from exc
+
+    if args.json:
+        print(
+            json.dumps(
+                _report_payload(report, args.view),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        _print_report(report, path, args.view, catalog is not None)
+    return 0
+
+
+def _read_file(path: Path, kind: str) -> bytes:
+    if not path.exists():
+        raise ValueError(f"{kind} not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"{kind} is not a file: {path}")
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"cannot read {kind} {path}: {exc}") from exc
+
+
+def _decode_script_text(data: bytes, path: Path) -> str:
+    if data.startswith(b"\xef\xbb\xbf"):
+        encoding = "utf-8-sig"
+    elif data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    else:
+        match = re.search(
+            br"""<\?xml[^>]*encoding=["']([A-Za-z0-9._-]+)["']""", data[:200]
+        )
+        encoding = match.group(1).decode("ascii") if match else "utf-8"
+    try:
+        return data.decode(encoding)
+    except (LookupError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            f"script file is not valid {encoding}: {path}: {exc}"
+        ) from exc
+
+
+def _blocked_services(script) -> list:
+    service_ids = sorted(
+        {
+            service_id
+            for ecu in script.ecus
+            for service_id in ecu.service_ids
+            if not is_read_only_service(service_id)
+        }
+    )
+    return [
+        {
+            "service_id": service_id,
+            "service_id_hex": "0x{:02X}".format(service_id),
+            "classification": classify_service(service_id),
+        }
+        for service_id in service_ids
+    ]
+
+
+def _script_payload(script, path: Path) -> dict:
+    plan = script.dtc_list
+    return {
+        "path": str(path),
+        "docno": script.docno,
+        "title": script.title,
+        "variant_id": script.variant_id,
+        "language": script.language,
+        "script_type": script.script_type,
+        "profiles": list(script.profile_ids),
+        "ecus": [
+            {
+                "mode": ecu.mode,
+                "ecu_address": ecu.ecu_address,
+                "ecu_address_hex": _format_id(ecu.ecu_address),
+                "ecu_type": ecu.ecu_type,
+                "ecu_type_hex": _format_id(ecu.ecu_type),
+                "tester_address": ecu.tester_address,
+                "tester_address_hex": _format_id(ecu.tester_address),
+                "service_ids": list(ecu.service_ids),
+                "service_ids_hex": [
+                    "0x{:02X}".format(service_id)
+                    for service_id in ecu.service_ids
+                ],
+                "service_classifications": [
+                    classify_service(service_id)
+                    for service_id in ecu.service_ids
+                ],
+                "requests": list(ecu.requests),
+                "responses": list(ecu.responses),
+            }
+            for ecu in script.ecus
+        ],
+        "dtc_plan": None
+        if plan is None
+        else {
+            "list_path": plan.list_path,
+            "value_path": plan.value_path,
+            "text_path": plan.text_path,
+            "raw_nodes": list(plan.raw_nodes),
+        },
+        "read_only_requests": [
+            {
+                "ecu_address": request.ecu_address,
+                "ecu_address_hex": _format_id(request.ecu_address),
+                "ecu_type": request.ecu_type,
+                "tester_address": request.tester_address,
+                "service_id": request.service_id,
+                "service_id_hex": "0x{:02X}".format(request.service_id),
+                "service_name": request.service_name,
+                "request": request.request,
+            }
+            for request in script.read_only_requests()
+        ],
+        "blocked_services": _blocked_services(script),
+        "executed": False,
+    }
+
+
+def _print_script(script, path: Path) -> None:
+    print(f"Script: {path}")
+    print(f"Docno: {script.docno or '-'}")
+    print(f"Title: {script.title or '-'}")
+    print(f"Variant: {script.variant_id or '-'}")
+    print(f"Language: {script.language or '-'}")
+    print(f"Type: {script.script_type or '-'}")
+    print(f"Profiles ({len(script.profile_ids)}): {', '.join(script.profile_ids) or '-'}")
+    print(f"ECUs ({len(script.ecus)}):")
+    for index, ecu in enumerate(script.ecus, 1):
+        print(
+            f"  [{index}] mode={ecu.mode or '-'} ecu_address={_format_id(ecu.ecu_address)} "
+            f"ecu_type={_format_id(ecu.ecu_type)} tester_address={_format_id(ecu.tester_address)}"
+        )
+        services = ", ".join(
+            "0x{:02X} {}".format(service_id, classify_service(service_id))
+            for service_id in ecu.service_ids
+        )
+        print(f"      services: {services or '-'}")
+        if ecu.requests:
+            requests = [value for value in ecu.requests if value]
+            if requests:
+                print(f"      raw requests: {' | '.join(requests)}")
+        if ecu.responses:
+            responses = [value for value in ecu.responses if value]
+            if responses:
+                print(f"      raw responses: {' | '.join(responses)}")
+    plan = script.dtc_list
+    if plan is None:
+        print("DTC plan: none")
+    else:
+        print("DTC plan:")
+        print(f"  list: {plan.list_path or '-'}")
+        print(f"  value: {plan.value_path or '-'}")
+        print(f"  text: {plan.text_path or '-'}")
+    requests = script.read_only_requests()
+    print(f"Read-only requests ({len(requests)}):")
+    for request in requests:
+        print(
+            "  ECU {}  service 0x{:02X} {}  request={}".format(
+                _format_id(request.ecu_address),
+                request.service_id,
+                request.service_name,
+                request.request or "(none)",
+            )
+        )
+    blocked = _blocked_services(script)
+    print(f"Blocked services ({len(blocked)}, never executed):")
+    for service in blocked:
+        print(
+            "  {} {}".format(
+                service["service_id_hex"], service["classification"]
+            )
+        )
+    print("Execution: none. This command only parses the script.")
+
+
+def cmd_vida_script(args: argparse.Namespace) -> int:
+    path = Path(args.script)
+    data = _read_file(path, "script")
+    try:
+        if zipfile.is_zipfile(io.BytesIO(data)):
+            script = parse_script_zip(data)
+        else:
+            script = parse_script_xml(_decode_script_text(data, path))
+    except VidaScriptError as exc:
+        raise ValueError(f"cannot parse script {path}: {exc}") from exc
+
+    if args.json:
+        print(
+            json.dumps(
+                _script_payload(script, path),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        _print_script(script, path)
+    return 0
+
+
 def cmd_readout(args: argparse.Namespace) -> int:
     bus = open_transport(args)
     try:
@@ -467,6 +1114,48 @@ def build_parser() -> argparse.ArgumentParser:
     extract_dice.add_argument("--arch", choices=("x64", "x86", "all"), default="x64")
     extract_dice.add_argument("--no-unpack", action="store_true", help="only recover MSI files")
     extract_dice.set_defaults(func=cmd_extract_dice_installer)
+
+    vida_catalog = subparsers.add_parser(
+        "vida-catalog", help="inspect a VIDA catalog JSON export"
+    )
+    vida_catalog.add_argument(
+        "--catalog", type=Path, required=True, help="catalog JSON file"
+    )
+    vida_catalog.add_argument(
+        "--code", help="DTC code to look up, for example P034211"
+    )
+    vida_catalog.add_argument("--json", action="store_true", help="print stable JSON")
+    vida_catalog.set_defaults(func=cmd_vida_catalog)
+
+    vida_report = subparsers.add_parser(
+        "vida-report", help="build read-only VIDA views from a saved scan report"
+    )
+    vida_report.add_argument(
+        "--scan", type=Path, required=True, help="saved dice-scan JSON report"
+    )
+    vida_report.add_argument(
+        "--catalog", type=Path, help="optional VIDA catalog JSON for DTC descriptions"
+    )
+    vida_report.add_argument(
+        "--vehicle", metavar="JSON", help="inline vehicle profile JSON or a JSON file"
+    )
+    vida_report.add_argument(
+        "--view",
+        choices=("all", "network", "faults", "dtcs"),
+        default="all",
+        help="section to print, default all",
+    )
+    vida_report.add_argument("--json", action="store_true", help="print stable JSON")
+    vida_report.set_defaults(func=cmd_vida_report)
+
+    vida_script = subparsers.add_parser(
+        "vida-script", help="parse a VIDA script ZIP or XML without executing it"
+    )
+    vida_script.add_argument(
+        "--script", type=Path, required=True, help="VIDA script ZIP or XML file"
+    )
+    vida_script.add_argument("--json", action="store_true", help="print stable JSON")
+    vida_script.set_defaults(func=cmd_vida_script)
 
     readout = subparsers.add_parser("readout", help="passively print CAN frames")
     add_bus_args(readout)
