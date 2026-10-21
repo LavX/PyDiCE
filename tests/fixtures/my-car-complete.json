@@ -1,0 +1,95 @@
+{
+  "name": "Discovered UDS modules including partial responders",
+  "modules": [
+    {
+      "name": "DIM",
+      "request_id": "0x720",
+      "response_id": "0x728"
+    },
+    {
+      "name": "CEM",
+      "request_id": "0x726",
+      "response_id": "0x72E"
+    },
+    {
+      "name": "CAN_730",
+      "request_id": "0x730",
+      "response_id": "0x738"
+    },
+    {
+      "name": "CAN_736",
+      "request_id": "0x736",
+      "response_id": "0x73E"
+    },
+    {
+      "name": "CAN_737",
+      "request_id": "0x737",
+      "response_id": "0x73F"
+    },
+    {
+      "name": "IEM",
+      "request_id": "0x745",
+      "response_id": "0x74D"
+    },
+    {
+      "name": "DCDC",
+      "request_id": "0x746",
+      "response_id": "0x74E"
+    },
+    {
+      "name": "IGM",
+      "request_id": "0x747",
+      "response_id": "0x74F"
+    },
+    {
+      "name": "OBC",
+      "request_id": "0x753",
+      "response_id": "0x75B"
+    },
+    {
+      "name": "CAN_756",
+      "request_id": "0x756",
+      "response_id": "0x75E"
+    },
+    {
+      "name": "CAN_760",
+      "request_id": "0x760",
+      "response_id": "0x768"
+    },
+    {
+      "name": "CAN_793",
+      "request_id": "0x793",
+      "response_id": "0x79B"
+    },
+    {
+      "name": "CAN_797",
+      "request_id": "0x797",
+      "response_id": "0x79F"
+    },
+    {
+      "name": "ACCM",
+      "request_id": "0x7C7",
+      "response_id": "0x7CF"
+    },
+    {
+      "name": "ECM",
+      "request_id": "0x7E0",
+      "response_id": "0x7E8"
+    },
+    {
+      "name": "TCM",
+      "request_id": "0x7E1",
+      "response_id": "0x7E9"
+    },
+    {
+      "name": "BECM",
+      "request_id": "0x7E4",
+      "response_id": "0x7EC"
+    },
+    {
+      "name": "CAN_7F1",
+      "request_id": "0x7F1",
+      "response_id": "0x7F9"
+    }
+  ]
+}
