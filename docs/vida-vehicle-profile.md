@@ -22,6 +22,7 @@ Paths are relative to the tree root.
 | `.../VidaEar.ear/lib/VidaData-2014D.jar` | JDBC layer, all SQL |
 | `.../VidaEar.ear/VidaWeb.war` | exploded web app, 279 classes under `WEB-INF/classes`, JSP and JS |
 | `db/BaseData_Data.MDF` | base data: `VehicleProfile` and components, stored procedures |
+| `db/DiceTiming_Data.MDF` | per-ECU-variant request timing and resend policy |
 
 Obvious decoys: `VidaConfig-2014D.jar` is i18n resources only, and
 `jboss/standalone/deployments/VidaEar.ear/VidaWeb.war` is exploded, so the war
@@ -55,7 +56,10 @@ getSpecialVehicles(partnerGroup, model, year)
 ```
 
 Each call returns the options allowed by the choices already made plus an
-optional chassis-number constraint. `SQLStatement` in `VidaData` holds eight
+optional chassis-number constraint. The model list is itself filtered per user
+by `VehicleModelsFiltering.filter(list, IUserSubscription)` before the cascade
+starts, so two users on the same tree can be offered different model sets.
+`SQLStatement` in `VidaData` holds eight
 variants per component: with and without a chassis range, and with one other
 component pre-fixed. One recovered example:
 
@@ -107,7 +111,9 @@ The manager logic, recovered from `BaseData_Data.MDF`:
    profile is always in the result.
 
 `getValidProfilesForSelectedBuilder` caches the result into `selectedProfiles`
-and `validProfiles`, keyed on the selection string.
+and `validProfiles`, keyed on the selection string. The EJB entry point that
+issues the call is `ManageVehicleProfileId`, which is the class named in the log
+excerpt below.
 
 `GetValidProfilesForSelected` with a null or empty argument returns only
 `FolderLevel = 0` rows, which is the "nothing selected yet" state.
@@ -124,8 +130,9 @@ navigation shows, through `getProfileNavTitle`.
 **By VIN** goes through `com/ford/vcc/vida/bl/parser/VinHandler`:
 `decodeVIN(vin, ..., partnerGroup)` resolves model and year from
 `VINDecodeModel`, then engine and transmission from `VINDecodeVariant`, with
-`VINVariantCodes` and `getVINComponents` as helpers. `vinHandling` produces the
-`VehicleSpecVO`.
+`VINVariantCodes` and `getVINComponents` as helpers, plus the
+`getVINComponentsByPartnerGroupId` call used when the partner group is known
+first. `vinHandling` produces the `VehicleSpecVO`.
 
 The adapter can also seed the form. `vehicleprofiledwr.js` calls
 `setVinFromCommTool`, which copies a 17-character `AssociatedVIN` from the comm
@@ -150,6 +157,35 @@ The profile ID set is a join key for content, not for bus traffic:
 
 So two vehicle types produce different documents, different parts, and different
 titles. They do not, in this stack, produce a different ECU list.
+
+## Protocol timing is a separate axis
+
+The profile is not the only thing that changes a read. VIDA keeps vehicle-side
+request timing in a second database, `db/DiceTiming_Data.MDF`, and that one *is*
+keyed to the car rather than to the content. Three tables:
+
+| Table | Columns |
+| --- | --- |
+| `dbo.Requests` | `ECU_variant`, `B1`, `B2`, `B3`, `MessageTimingId`, `TimeoutAndResendId` |
+| `dbo.MessageTiming` | `P1max`, `P3min`, `P4min` |
+| `dbo.TimeoutAndResend` | `Timeout`, `Resend` |
+
+Two procedures, `GetRequestTiming` and `GetRequestTimeoutAndResend`, take an ECU
+variant integer plus the first one, two, or three request bytes and narrow from
+three bytes down to one. `RequestTimingView` and `RequestTimeoutAndResendView`
+join the tables. Row notes name specific models, for example:
+
+```
+329 is SRS X40 01-04 AE 1B request DTCs
+304 is CCM/ECM X70 -00. B2 01 start the self adjusting damper motor
+Special values for multiple responses
+Special values for multiple responses for SRS on classic x70 (-00)
+```
+
+So the lookup key is **ECU variant plus request bytes**, not `VehicleProfile`.
+That distinction matters: the profile selects which information is shown, while
+the variant plus request bytes select how long to wait and whether to resend.
+Both are vehicle-dependent, along different axes.
 
 ## Runtime confirmation
 
@@ -192,6 +228,13 @@ assumes one flat target list (`P3_D6_MODULES`) or one explicit profile file. A
 VIDA-shaped design would resolve a selection to a set of compatible module
 profiles and scan the union.
 
+The timing database is the more immediately useful half. Right now every read
+uses one fixed `--timeout`, and `dice_can` retries nothing. VIDA treats timeout
+and resend as per-ECU-variant data keyed by the first request bytes, which is why
+it can wait longer on a slow module without slowing the rest. Adopting that shape
+means a per-target timeout and resend policy in `ModuleTarget`, seeded from
+observed behaviour rather than from the VIDA table itself.
+
 ## Open questions
 
 1. **Does profile selection change bus-level readout?** Nothing in the Java stack
@@ -211,6 +254,12 @@ profiles and scan the union.
 5. **Is `getVINComponents` still used?** It is defined and referenced, but the
    VIN path in the log failed before reaching a profile, so its output was never
    observed.
+6. **What numbering does `Requests.ECU_variant` use?** The column is an integer
+   and `DiceTiming_Data.MDF` carries no name table, so the variant space cannot be
+   mapped to ECU names from that database alone.
+7. **What are the actual timing values?** `P1max`, `P3min`, `P4min`, `Timeout`
+   and `Resend` are numeric columns and were not extracted. The row notes were,
+   which is how the model-specific entries above were identified.
 
 ## Caveats on the recovered SQL
 
@@ -249,6 +298,10 @@ javap -v -p "$WORK/vida-data/com/ford/vcc/vida/data/jdbc/basedata/dao/SQLStateme
 strings -a -n 4 "$VIDA/db/BaseData_Data.MDF" > "$WORK/basedata.strings"
 grep -n "GetValidProfileManager\|getValidProfilesForSelectedBuilder\|CREATE VIEW dbo.VehicleProfileDescriptions" \
   "$WORK/basedata.strings"
+
+# the protocol timing tables and row notes
+strings -a -n 5 "$VIDA/db/DiceTiming_Data.MDF" > "$WORK/dicetiming.strings"
+grep -nE "CREATE (VIEW|PROCEDURE)|ECU_variant" "$WORK/dicetiming.strings"
 ```
 
 Extracting the jars in the first place:
