@@ -48,7 +48,7 @@ The loader accepts version 1 and version 2. A malformed section still raises
 
 ## Recovered counts in this snapshot
 
-These are the counts from the 2022 VIDA 2014D image used for this pass. Numbers
+These are the counts from the 2022 source image used for this pass. Numbers
 are exact for that image and will differ on another release.
 
 | Item | Count |
