@@ -239,8 +239,9 @@ means the available evidence goes against the earlier wording.
 | `DiceTiming` has 41 `Requests`, 3 `MessageTiming` and 1 `TimeoutAndResend` row; default 3000 ms, no resend | observed | page-level extraction |
 | The `T121_Config` row values are known | unverified | columns are catalogued; page headers did not carry the object id |
 | Scripts are ZIP XML and `EcuAddress` is a node address | observed | ZIP header, `ZipInputStream`, `T121_Config.commAddress` |
+| The script `EcuAddress` is the `commAddress` side, not `canAddress` | observed | CarCom proc selects both; managed chain calls `commAddress` the node address |
 | `fkNodeECU` is a per-profile ECU list | contradicted | no shipped consumer; the script is the logical map and `T121_Config` the physical map |
-| The `NodeECU` row values are known | unverified | columns are catalogued; page headers did not carry the object id |
+| `NodeECU` has 52 label rows and no address column | observed | BaseData page 12028 / auid 152 |
 | The DTC list procedure returns `T141_Block.name` as `Data`; `T147` is not the text join | observed | `vadis_GetAllPossibleDtcsOnEcu` |
 | The VIDA image holds no adapter command table | documented | targeted searches; absence is bounded by that coverage |
 
@@ -249,18 +250,22 @@ means the available evidence goes against the earlier wording.
 1. **How complete is the script coverage?** Two concrete scripts were decoded.
    The full set, and the bodies that fail CRC, remain unread.
 2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
-   the columns, but its rows were not reachable by page parsing. A read-only SQL
-   Server attach on a copy would close it.
-3. **What are the `NodeECU` rows?** The code consumer is absent and the columns
-   are known, but the rows were not enumerated.
-4. **Does `T147` have a physical third column?** Only the two keys are visible
-   to every shipped query. A catalog dump would settle the physical schema.
-5. **How does the article phrase map to text id 1,034,063?** The id appears only
-   in T190/T191/T192, not in DTC or block tables. The phrase URN is the likely
-   key.
-6. **How does `EcuVariantId` map to a vehicle or ECU name?** The timing table
-   uses the integer; `EcuNameFromVariantId` is display-side and its backing data
-   was not located.
+   the columns, and the proc/managed chain puts `EcuAddress` on the `commAddress`
+   side, but its rows were not reachable by page parsing. A read-only SQL Server
+   attach on a copy would close it.
+3. **Does `T147` have a physical third column?** Only the two keys are visible
+   to every shipped query. The name is not in CarComRT `sysschobjs`; it appears
+   in `syssoftobjrefs`.
+4. **How does the article phrase map to text id 1,034,063?** The P034211 phrase
+   is `urn:x-nevis:phrase:0800c8af84c73062`, but the URN-to-id table was not
+   located.
+5. **How does `EcuVariantId` map to a vehicle or ECU name?** The id is
+   `T100_EcuVariant.id` via `T120_Config_EcuVariant`, and
+   `EcuNameFromVariantId` uses `vadis_GetEcuVariantData`/`T102_EcuType.description`;
+   the T102 rows were not read.
+6. **Does DiceTiming drive CAN or only the K-line D2 path?** A third-pass IL read
+   puts it on `D2onKApplicationDICE3`, while CAN appears to use
+   `vadis_GetDiagTimings`; no managed caller for the CAN proc was found.
 7. **Can the command-space negative result be made complete?** The image is
    large and the current evidence is a set of targeted searches.
 8. **What does `Vida.exe` do?** It was identified and hashed, not analysed.

@@ -272,9 +272,12 @@ read; what remains is coverage, not format.
 table has 41 `Requests` rows, 3 `MessageTiming` rows and 1 `TimeoutAndResend`
 row. Every override points at 3000 ms and resend 0; the variation is in
 `P1max`/`P3min`/`P4min` (id 0: 40/110/10, id 1: 6/27/2, id 2: 10/110/2).
-That is covered in `docs/vida-vehicle-profile.md`; it is a separate axis from the
-script. `EcuNameFromVariantId` is a display-side helper, not part of the runtime
-timing path.
+The integer is `T100_EcuVariant.id`: `GetEcuVariantIdForConfigId` reads
+`T120_Config_EcuVariant` for a `T121_Config` id and takes ordinal 1.
+`EcuNameFromVariantId` calls `vadis_GetEcuVariantData`, which reads
+`T102_EcuType.description`; it is display-side and not part of the runtime
+timing path. That is covered in `docs/vida-vehicle-profile.md`; it is a separate
+axis from the script.
 
 ## What this means for PyDiCE
 
@@ -307,13 +310,15 @@ remaining work is coverage, not format.
 3. **What values does `VehType` take besides `p2x`?** No code branch or
    enumeration was found; it is a three-character string carried as data. The
    PIE WSDL constrains only its length.
-4. **How does `EcuNameFromVariantId` get its data?** The assembly carries only
-   four inline names, so the mapping comes from a resource or a database table
-   that has not been located. It is display-side; it is not in the timing path.
-5. **Where do the timing values come from at runtime?** The `@ECU` chain is
-   traced from CarCom `EcuConfig.EcuVariantId` through `DiagnosticSetting` and
-   `DiceTimingLookup` to `DatabaseSession`. The table values are extracted; how
-   an `EcuVariantId` maps to a specific vehicle or ECU name remains open.
+4. **How does `EcuNameFromVariantId` get its data?** It calls
+   `vadis_GetEcuVariantData`, which reads `T102_EcuType.description`. The T102
+   rows were not read, so the 11 DiceTiming variant ids are not yet joined to
+   names. It is display-side and not in the timing path.
+5. **Where do the timing values come from at runtime?** The `@ECU` id is
+   `T100_EcuVariant.id`, reached through `T120_Config_EcuVariant`. The table
+   values are extracted. Whether DiceTiming drives CAN or only the K-line
+   `D2onKApplicationDICE3` path remains open; CAN appears to use
+   `vadis_GetDiagTimings`, but its managed caller was not found.
 6. **Does the client actually connect to DiCE in this tree?** The empty
    `CommToolName` maps to `NOCOMM`, which throws at connection construction, so
    no live connection is possible from this snapshot without changing the tool

@@ -163,8 +163,10 @@ There are three text paths, and only one is the DTC list data:
 For `0x034211`, the value row points at text id 1,004,326, "Camshaft Position
 Sensor A Circuit Low (Bank 1 or single sensor)". The long sentence text id
 1,034,063 is a real `T191` row, but no CarCom table referenced it in a raw
-4-byte scan. The `0x034211` block is type 32, not type 10, so it is not a D2
-possible-DTC row; the T150/T191 description is the generic OBD path.
+4-byte scan. The P034211 article phrase is
+`urn:x-nevis:phrase:0800c8af84c73062`; the URN-to-id table was not located.
+The `0x034211` block is type 32, not type 10, so it is not a D2 possible-DTC
+row; the T150/T191 description is the generic OBD path.
 
 `DtcVO.Text` is populated from `T141_Block.name` by
 `CarComRepository.GetAllPossibleDtcsOnD2Ecu`, and from the script's `Dtc.Text`
@@ -345,7 +347,8 @@ platform can key descriptions by code directly.
    carries `fkT141_Block` and `fkT100_EcuVariant`, and no third column is visible
    to any shipped query. The DTC value text joins through
    `T150_BlockValue.fkt190_text_value`. Remaining: the exact T150 block-id
-   offset and the article phrase URN that reaches text id 1,034,063.
+   offset and the URN-to-id mapping for the P034211 phrase
+   `urn:x-nevis:phrase:0800c8af84c73062`.
 2. **Which row is the short name?** The DTC list procedure returns
    `T141_Block.name` as `Data`; `DtcVO.Text` is set from it on the
    possible-DTC path. The UI reads `Workflow.Dtc.Text`, not `DtcVO.Text`; on the

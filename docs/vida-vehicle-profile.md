@@ -278,23 +278,25 @@ sample, so it is not the near-term gap.
    `VehicleProfileDAO` selects it into `VehicleProfileVO`, `getNodeECU` has no
    caller, and no managed PE or Java class consumes it. The script is the
    logical addressing map and CarCom `T121_Config` is the physical map.
-   `NodeECU` has columns `Id`, `Cid`, `Description`, `ObjVersion`; its rows were
-   not extracted, so the table is not proven vestigial.
+   `NodeECU` has 52 label rows (ABS, PSM, ALARM, ...) and no address column.
+   With no shipped consumer, it reads as editorial residue.
 3. **What are the `FolderLevel` values between 0 and 3?** Only 0 and 3 are
    observed. 1 and 2 are assumed to be intermediate hierarchy nodes; nothing read
    so far confirms it.
 4. **What is in the catalog?** The MDF string dump cannot enumerate rows, and the
    component descriptions do not survive extraction in either encoding tried.
-   Row counts, model names and `NodeECU` values need a real SQL Server attach.
+   Model names and most component values still need a real SQL Server attach;
+   `NodeECU` is the exception, with 52 label rows and no address column.
 5. **Is `getVINComponents` still used?** It is defined and referenced, but the
    VIN path in the log failed before reaching a profile, so its output was never
    observed.
-6. **What numbering does `Requests.ECU_variant` use?** The column is an integer
-   and `DiceTiming_Data.MDF` carries no name table, so the variant space cannot be
-   mapped to ECU names from that database alone.
-7. **What are the actual timing values?** `P1max`, `P3min`, `P4min`, `Timeout`
-   and `Resend` are numeric columns and were not extracted. The row notes were,
-   which is how the model-specific entries above were identified.
+6. **What numbering does `Requests.ECU_variant` use?** It is
+   `T100_EcuVariant.id`, reached through `T120_Config_EcuVariant`. The 11 ids
+   appear in the row comments; the T102 names were not read.
+7. **Do the timing values apply to CAN or only the K-line path?** The values are
+   extracted (41 `Requests`, 3000 ms, no resend). A third-pass IL read puts
+   DiceTiming on `D2onKApplicationDICE3`; CAN appears to use
+   `vadis_GetDiagTimings`, but its managed caller was not found.
 
 ## Caveats on the recovered SQL
 
