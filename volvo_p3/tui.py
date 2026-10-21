@@ -5,6 +5,7 @@ from __future__ import annotations
 import curses
 import contextlib
 import io
+import json
 import os
 import shlex
 import sys
@@ -13,11 +14,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from volvo_p3.can_transport import CanBusConfig, PythonCanTransport
+    from volvo_p3.diagnostics import DiagnosticReport, build_report as build_diagnostic_report
+    from volvo_p3.diagnostics import fault_trace as build_fault_trace
+    from volvo_p3.diagnostics import network_status as compute_network_status
     from volvo_p3.dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
     from volvo_p3.modules import KNOWN_MODULES, parse_ecu
     from volvo_p3.protocol import (
@@ -30,8 +34,19 @@ if __package__ in (None, ""):
         is_response_to,
         parse_dtc_response,
     )
+    from volvo_p3.vida_catalog import CatalogError, VidaCatalog, load_catalog
+    from volvo_p3.vida_script import (
+        VidaScript,
+        VidaScriptError,
+        classify_service,
+        parse_script_xml,
+        parse_script_zip,
+    )
 else:
     from .can_transport import CanBusConfig, PythonCanTransport
+    from .diagnostics import DiagnosticReport, build_report as build_diagnostic_report
+    from .diagnostics import fault_trace as build_fault_trace
+    from .diagnostics import network_status as compute_network_status
     from .dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
     from .modules import KNOWN_MODULES, parse_ecu
     from .protocol import (
@@ -43,6 +58,14 @@ else:
         hex_id,
         is_response_to,
         parse_dtc_response,
+    )
+    from .vida_catalog import CatalogError, VidaCatalog, load_catalog
+    from .vida_script import (
+        VidaScript,
+        VidaScriptError,
+        classify_service,
+        parse_script_xml,
+        parse_script_zip,
     )
 
 
@@ -85,6 +108,410 @@ def _optional_int(value: str | None) -> int | None:
 def _parse_ecu_list(text: str) -> list[int]:
     values = [piece.strip() for piece in text.split(",")]
     return [parse_ecu(piece) for piece in values if piece]
+
+
+# VIDA views -------------------------------------------------------------
+
+DEFAULT_VIDA_CATALOG = "reports/vida_catalog.json"
+DEFAULT_VIDA_SCAN = "reports/my-car-complete.json"
+
+
+def default_vida_catalog_path() -> str:
+    """Return the conventional catalog path, or blank when it is absent."""
+
+    return DEFAULT_VIDA_CATALOG if Path(DEFAULT_VIDA_CATALOG).is_file() else ""
+
+
+def default_vida_scan_path() -> str:
+    """Return the conventional saved scan path."""
+
+    return DEFAULT_VIDA_SCAN
+
+
+def vida_catalog_mapping(catalog: VidaCatalog) -> dict[str, Any]:
+    """Flatten a loaded catalog into the mapping shape diagnostics accepts.
+
+    Only text the catalog actually carries is copied. A code whose entries
+    disagree is left out so no caller has to choose a description.
+    """
+
+    if not isinstance(catalog, VidaCatalog):
+        raise TypeError("catalog must be a VidaCatalog")
+
+    global_texts: dict[str, set[str]] = {}
+    module_texts: dict[str, dict[str, set[str]]] = {}
+    for entry in catalog.dtc_descriptions:
+        text = (entry.short_text or entry.long_text or "").strip()
+        if not text:
+            continue
+        if entry.ecu:
+            module_texts.setdefault(entry.ecu.strip().upper(), {}).setdefault(
+                entry.code, set()
+            ).add(text)
+        else:
+            global_texts.setdefault(entry.code, set()).add(text)
+
+    mapping: dict[str, Any] = {}
+    for code, texts in global_texts.items():
+        if len(texts) == 1:
+            mapping[code] = {"description": next(iter(texts))}
+
+    modules: dict[str, Any] = {}
+    for ecu, codes in module_texts.items():
+        scoped: dict[str, Any] = {}
+        for code, texts in codes.items():
+            if len(texts) == 1:
+                scoped[code] = {"description": next(iter(texts))}
+        if scoped:
+            modules[ecu] = scoped
+    if modules:
+        mapping["modules"] = modules
+    return mapping
+
+
+def build_vida_report(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> DiagnosticReport:
+    """Load a saved scan, optionally merge a catalog, and build the view data.
+
+    Missing files raise ``FileNotFoundError`` and malformed input raises
+    ``ValueError`` (``CatalogError`` included). The TUI renders those as an
+    error line; callers that want that behaviour should use one of the
+    ``vida_*_lines`` wrappers below.
+    """
+
+    report_text = str(scan_path).strip()
+    if not report_text:
+        raise FileNotFoundError("enter a scan report JSON path")
+    report_path = Path(report_text)
+    if not report_path.is_file():
+        raise FileNotFoundError("scan report not found: {}".format(report_path))
+
+    try:
+        with report_path.open(encoding="utf-8") as handle:
+            scan = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "scan report is not valid JSON: {} (line {}, column {})".format(
+                report_path, exc.lineno, exc.colno
+            )
+        ) from exc
+    if not isinstance(scan, dict):
+        raise ValueError(
+            "scan report root must be a JSON object: {}".format(report_path)
+        )
+
+    catalog_mapping: Mapping[str, Any] | None = None
+    catalog_text = str(catalog_path).strip() if catalog_path is not None else ""
+    if catalog_text:
+        catalog_file = Path(catalog_text)
+        if not catalog_file.is_file():
+            raise FileNotFoundError("catalog not found: {}".format(catalog_file))
+        catalog_mapping = vida_catalog_mapping(load_catalog(catalog_file))
+
+    return build_diagnostic_report(scan, catalog=catalog_mapping, vehicle=vehicle)
+
+
+def _vida_hex(value: int | None, width: int = 2) -> str:
+    if value is None:
+        return "-"
+    return "0x{:0{}X}".format(value, width)
+
+
+def _vida_dtc_line(dtc: Any) -> str:
+    line = "  {}  {}".format(dtc.code or "(no code)", dtc.classification)
+    if dtc.description:
+        line += "  " + dtc.description
+    return line
+
+
+def _vida_report_title(report: DiagnosticReport) -> str:
+    return report.name or "saved scan"
+
+
+def format_vida_dtc_lines(report: DiagnosticReport) -> list[str]:
+    """Format the module and DTC overview for one report."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    lines = ["VIDA DTC overview: {}".format(_vida_report_title(report))]
+    vin = report.vehicle.get("vin") if isinstance(report.vehicle, Mapping) else None
+    if isinstance(vin, str) and vin.strip():
+        lines.append("vin: {}".format(vin.strip().upper()))
+    lines.append(
+        "modules: {} | DTC records: {} | described: {} | current faults: {}".format(
+            report.module_count,
+            report.dtc_count,
+            report.described_dtc_count,
+            report.current_fault_count,
+        )
+    )
+    if not report.modules:
+        lines.append("no modules in this report")
+        return lines
+
+    for module in report.modules:
+        lines.append(
+            "{}  request={}  response={}  status={}  dtcs={}".format(
+                module.name or "(unnamed)",
+                _vida_hex(module.request_id, 3),
+                _vida_hex(module.response_id, 3),
+                module.status or "unknown",
+                module.dtc_count,
+            )
+        )
+        lines.extend(_vida_dtc_line(dtc) for dtc in module.dtcs)
+    return lines
+
+
+def format_vida_network_lines(report: DiagnosticReport) -> list[str]:
+    """Format the responder summary for one report."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    network = compute_network_status(report)
+    lines = [
+        "VIDA network status: {}".format(_vida_report_title(report)),
+        "total modules: {}".format(network.total_modules),
+        "responders: {} ({:.0%})".format(
+            network.responder_count, network.coverage_ratio
+        ),
+        "no response: {}".format(", ".join(network.no_response) or "(none)"),
+        "incomplete: {}".format(", ".join(network.incomplete) or "(none)"),
+        "negative response: {}".format(
+            ", ".join(network.negative_response) or "(none)"
+        ),
+        "unclassified: {}".format(", ".join(network.other) or "(none)"),
+        "coverage: {}".format(network.coverage_note),
+    ]
+    return lines
+
+
+def format_vida_fault_lines(report: DiagnosticReport) -> list[str]:
+    """Format DTCs grouped by module and fault state."""
+
+    groups = build_fault_trace(report)
+    lines = [
+        "VIDA fault trace: {}".format(_vida_report_title(report)),
+        "current faults: {} | groups: {}".format(
+            report.current_fault_count, len(groups)
+        ),
+    ]
+    if not groups:
+        lines.append("no DTC records in this report")
+        return lines
+
+    for group in groups:
+        lines.append(
+            "{}  {}  ({})".format(
+                group.module or "(unnamed)", group.status, group.count
+            )
+        )
+        lines.extend(_vida_dtc_line(dtc) for dtc in group.dtcs)
+    return lines
+
+
+def _safe_vida_report_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None,
+    vehicle: Mapping[str, Any] | None,
+    formatter: Callable[[DiagnosticReport], list[str]],
+) -> list[str]:
+    try:
+        report = build_vida_report(scan_path, catalog_path, vehicle)
+    except (OSError, ValueError, TypeError) as exc:
+        return ["error: {}".format(exc)]
+    return formatter(report)
+
+
+def vida_dtc_overview_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return DTC overview lines, with a single error line on bad input."""
+
+    return _safe_vida_report_lines(
+        scan_path, catalog_path, vehicle, format_vida_dtc_lines
+    )
+
+
+def vida_network_status_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return network status lines, with a single error line on bad input."""
+
+    return _safe_vida_report_lines(
+        scan_path, catalog_path, vehicle, format_vida_network_lines
+    )
+
+
+def vida_fault_trace_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return fault trace lines, with a single error line on bad input."""
+
+    return _safe_vida_report_lines(
+        scan_path, catalog_path, vehicle, format_vida_fault_lines
+    )
+
+
+def build_vida_catalog_view(path: str | os.PathLike[str]) -> list[str]:
+    """Load a catalog and describe its sections, or return an error line."""
+
+    text = str(path).strip()
+    if not text:
+        return ["error: enter a VIDA catalog JSON path"]
+    catalog_path = Path(text)
+    if not catalog_path.is_file():
+        return ["error: catalog not found: {}".format(catalog_path)]
+    try:
+        catalog = load_catalog(catalog_path)
+    except (OSError, CatalogError) as exc:
+        return ["error: {}".format(exc)]
+
+    source = catalog.source
+    lines = [
+        "catalog: {}".format(catalog_path),
+        "source: {}".format(source.kind),
+    ]
+    if source.generated_at:
+        lines.append("generated: {}".format(source.generated_at))
+    if source.image:
+        lines.append("image: {}".format(source.image))
+    if source.language:
+        lines.append("language: {}".format(source.language))
+    lines.append(
+        "dtc descriptions: {} ({} codes)".format(
+            len(catalog.dtc_descriptions),
+            len({entry.code for entry in catalog.dtc_descriptions}),
+        )
+    )
+    lines.append("timing entries: {}".format(len(catalog.timing)))
+    lines.append("profiles: {}".format(len(catalog.profiles)))
+    lines.append("scripts: {}".format(len(catalog.scripts)))
+    return lines
+
+
+def _parse_vida_script(data: bytes, suffix: str) -> VidaScript:
+    if suffix == ".zip" or data.startswith(b"PK\x03\x04"):
+        return parse_script_zip(data)
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16")
+    else:
+        text = data.decode("utf-8-sig")
+    return parse_script_xml(text)
+
+
+def _format_vida_script(script: VidaScript, path: Path) -> list[str]:
+    lines = [
+        "script: {}".format(path),
+        "docno: {}".format(script.docno or "(none)"),
+        "title: {}".format(script.title or "(none)"),
+        "type: {}".format(script.script_type or "(none)"),
+    ]
+    if script.variant_id:
+        lines.append("variant: {}".format(script.variant_id))
+    if script.language:
+        lines.append("language: {}".format(script.language))
+    if script.profile_ids:
+        lines.append("profiles: {}".format(", ".join(script.profile_ids)))
+
+    lines.append("ECUs: {}".format(len(script.ecus)))
+    for plan in script.ecus:
+        services = ", ".join(
+            "0x{:02X}({})".format(service_id, classify_service(service_id))
+            for service_id in plan.service_ids
+        ) or "(none)"
+        lines.append(
+            "  ecu={} type={} tester={} mode={} services={}".format(
+                _vida_hex(plan.ecu_address),
+                _vida_hex(plan.ecu_type, 1),
+                _vida_hex(plan.tester_address),
+                plan.mode or "-",
+                services,
+            )
+        )
+
+    requests = script.read_only_requests()
+    lines.append(
+        "read-only plan: {} request{}".format(
+            len(requests), "" if len(requests) == 1 else "s"
+        )
+    )
+    for request in requests:
+        lines.append(
+            "  ecu={} service=0x{:02X} {} request={}".format(
+                _vida_hex(request.ecu_address),
+                request.service_id,
+                request.service_name,
+                request.request or "-",
+            )
+        )
+
+    dropped = sorted(
+        {
+            service_id
+            for plan in script.ecus
+            for service_id in plan.service_ids
+            if classify_service(service_id) != "read_only"
+        }
+    )
+    if dropped:
+        lines.append(
+            "dropped services: {}".format(
+                ", ".join(
+                    "0x{:02X}({})".format(service_id, classify_service(service_id))
+                    for service_id in dropped
+                )
+            )
+        )
+
+    dtc_plan = script.dtc_list
+    if dtc_plan is None:
+        lines.append("DTC list: (none)")
+    else:
+        parts = []
+        if dtc_plan.list_path:
+            parts.append("list={}".format(dtc_plan.list_path))
+        if dtc_plan.value_path:
+            parts.append("value={}".format(dtc_plan.value_path))
+        if dtc_plan.text_path:
+            parts.append("text={}".format(dtc_plan.text_path))
+        lines.append("DTC list: {}".format(" ".join(parts) or "(none)"))
+
+    lines.append("plan only: nothing was sent to a vehicle")
+    return lines
+
+
+def build_vida_script_view(path: str | os.PathLike[str]) -> list[str]:
+    """Parse a VIDA script ZIP or XML into a plan, or return an error line."""
+
+    text = str(path).strip()
+    if not text:
+        return ["error: enter a VIDA script ZIP or XML path"]
+    script_path = Path(text)
+    if not script_path.is_file():
+        return ["error: script not found: {}".format(script_path)]
+    try:
+        data = script_path.read_bytes()
+    except OSError as exc:
+        return ["error: cannot read script {}: {}".format(script_path, exc)]
+
+    try:
+        script = _parse_vida_script(data, script_path.suffix.lower())
+    except (OSError, ValueError, UnicodeDecodeError, VidaScriptError) as exc:
+        return ["error: {}".format(exc)]
+
+    return _format_vida_script(script, script_path)
 
 
 class VolvoTuiApp:
@@ -225,6 +652,47 @@ class VolvoTuiApp:
                             FieldSpec("timeout", "Timeout in seconds", "1.0"),
                             FieldSpec("confirm", "Type CLEAR to confirm", ""),
                         ),
+                    ),
+                ),
+            ),
+            SectionSpec(
+                "VIDA",
+                (
+                    ActionSpec(
+                        "Load VIDA Catalog",
+                        "Load and validate a VIDA catalog JSON export.",
+                        self._vida_load_catalog,
+                        (FieldSpec("vida_catalog", "Catalog JSON", default_vida_catalog_path()),),
+                    ),
+                    ActionSpec(
+                        "VIDA DTC Overview",
+                        "List modules and DTCs from a saved scan report, with catalog descriptions when present.",
+                        self._vida_dtc_overview,
+                        (
+                            FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),
+                            FieldSpec("vida_catalog", "Catalog JSON (optional)", default_vida_catalog_path()),
+                        ),
+                    ),
+                    ActionSpec(
+                        "VIDA Fault Trace",
+                        "Group saved DTCs by module and fault state.",
+                        self._vida_fault_trace,
+                        (
+                            FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),
+                            FieldSpec("vida_catalog", "Catalog JSON (optional)", default_vida_catalog_path()),
+                        ),
+                    ),
+                    ActionSpec(
+                        "VIDA Network Status",
+                        "Summarize responders, silence, and partial responses in a saved scan.",
+                        self._vida_network_status,
+                        (FieldSpec("vida_scan", "Scan report JSON", default_vida_scan_path()),),
+                    ),
+                    ActionSpec(
+                        "VIDA Script Plan",
+                        "Parse a VIDA script ZIP or XML into a read-only plan.",
+                        self._vida_script_plan,
+                        (FieldSpec("vida_script", "Script ZIP or XML", ""),),
                     ),
                 ),
             ),
@@ -643,6 +1111,35 @@ class VolvoTuiApp:
             return lines
         finally:
             bus.close()
+
+    def _vida_vehicle(self) -> dict[str, str] | None:
+        return {"vin": self.vehicle.vin} if self.vehicle.vin else None
+
+    def _vida_load_catalog(self, values: dict[str, str]) -> list[str]:
+        return build_vida_catalog_view(values.get("vida_catalog", ""))
+
+    def _vida_dtc_overview(self, values: dict[str, str]) -> list[str]:
+        return vida_dtc_overview_lines(
+            values.get("vida_scan", ""),
+            values.get("vida_catalog", ""),
+            self._vida_vehicle(),
+        )
+
+    def _vida_fault_trace(self, values: dict[str, str]) -> list[str]:
+        return vida_fault_trace_lines(
+            values.get("vida_scan", ""),
+            values.get("vida_catalog", ""),
+            self._vida_vehicle(),
+        )
+
+    def _vida_network_status(self, values: dict[str, str]) -> list[str]:
+        return vida_network_status_lines(
+            values.get("vida_scan", ""),
+            vehicle=self._vida_vehicle(),
+        )
+
+    def _vida_script_plan(self, values: dict[str, str]) -> list[str]:
+        return build_vida_script_view(values.get("vida_script", ""))
 
     def _draw(self, stdscr: curses.window) -> None:
         stdscr.erase()
