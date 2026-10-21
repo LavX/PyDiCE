@@ -51,11 +51,30 @@ channel. Other buses, 29-bit addressing, legacy D2, and modules requiring
 other diagnostic sessions are not automatically scanned. A timeout is not
 proof that a module is absent or fault-free.
 
+### VIDA-style views
+
+The VIDA layer exports the recovered DTC descriptions and request timing from
+the image, parses VIDA script bodies, and builds read-only DTC, network and
+fault-trace views. The catalog export needs no SQL Server.
+
+```sh
+python3 tools/export_vida_catalog.py --image /mnt/vida --out reports/vida_catalog.json
+python3 -m volvo_p3.cli vida-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/vida_catalog.json
+python3 -m volvo_p3.cli vida-script --script path/to/script.zip
+python3 -m volvo_p3.cli vida-run-script --script path/to/script.zip --address-map reports/vida_addresses.json
+```
+
+`vida-run-script` only plans by default. `--execute` sends the planned read
+services through the native DiCE transport; non-read services are never sent.
+The logical-address map is explicit because the shipped `T121_Config` is empty.
+See [vida-diagnostics.md](docs/vida-diagnostics.md).
+
 The earlier reverse-engineering notes below are historical.
 
 Background material lives under `docs/`: the native path in
 [native-dice.md](docs/native-dice.md), the recovered adapter command space in
-[dice-compatibility.md](docs/dice-compatibility.md), and the VIDA reference notes
+[dice-compatibility.md](docs/dice-compatibility.md), the VIDA runtime notes in
+[vida-diagnostics.md](docs/vida-diagnostics.md), and the VIDA reference notes
 in [vida-vehicle-profile.md](docs/vida-vehicle-profile.md),
 [vida-diagnostics-client.md](docs/vida-diagnostics-client.md),
 [vida-dtc-readout.md](docs/vida-dtc-readout.md),

@@ -144,7 +144,7 @@ def test_plan_uses_read_only_requests_and_maps_both_address_kinds():
     assert [record.request_hex for record in plan.records] == [
         "19 02 FF",
         "22 F1 90",
-        "19",
+        "19 02 FF",
     ]
     assert all(record.status == "planned" for record in plan.records)
     assert plan.unmapped == ()
@@ -180,15 +180,22 @@ def test_plan_drops_every_non_read_service():
     )
 
 
-def test_plan_marks_service_only_request():
-    plan = build_run_plan(
-        read_script(),
-        parse_address_map({"0x11": "0x7E0", "381101": "0x7E1"}),
+def test_plan_skips_request_without_request_bytes():
+    script = parse_script_xml(
+        """<script type="ReadDTCs"><content><nodes>
+        <node class="Components.VehComm">
+          <property name="Mode" value="EcuAddress" />
+          <property name="EcuAddress" value="17" />
+          <property name="ServiceId" value="19" />
+        </node>
+        </nodes></content></script>"""
     )
+    plan = build_run_plan(script, parse_address_map({"0x11": "0x7E0"}))
 
-    record = plan.records[2]
-    assert record.request_bytes == b"\x19"
-    assert "service byte only" in record.detail
+    record = plan.records[0]
+    assert record.request_bytes == b""
+    assert record.status == "skipped_unsupported"
+    assert "no request bytes" in record.detail
 
 
 def test_plan_to_dict_reports_unmapped_and_counts():
@@ -426,8 +433,9 @@ def test_cli_execute_runs_through_transport(monkeypatch, tmp_path, capsys):
     answered = {"done": False}
 
     class FakeBus:
-        def __init__(self, rpc, uds_requests=()):
+        def __init__(self, rpc, uds_requests=(), allow_read_services=False):
             self.uds_requests = tuple(uds_requests)
+            self.allow_read_services = allow_read_services
 
         def __enter__(self):
             return self

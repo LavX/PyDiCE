@@ -471,7 +471,12 @@ def build_run_plan(script: VidaScript, address_map: AddressMap) -> RunPlan:
         source_ecu = _source_label(request.ecu_address, request.ecu_type)
         detail_parts: List[str] = []
 
-        if not is_read_only_service(request.service_id):
+        if not request_bytes:
+            status = STATUS_SKIPPED_UNSUPPORTED
+            detail_parts.append(
+                byte_note or "script supplied no request bytes"
+            )
+        elif not is_read_only_service(request.service_id):
             status = STATUS_SKIPPED_NON_READ
             detail_parts.append(
                 "service 0x{:02X} is not a read service".format(
@@ -1059,20 +1064,14 @@ def _request_bytes(request: ReadRequest) -> Tuple[bytes, Optional[str]]:
     """Return the request payload; fall back to the service byte when absent."""
 
     if request.request is None or not request.request.strip():
-        return (
-            bytes((request.service_id,)),
-            "script supplied no request bytes; sending the service byte only",
-        )
+        return b"", "script supplied no request bytes"
     compact = re.sub(r"[\s:_-]+", "", request.request.strip())
     try:
         data = bytes.fromhex(compact)
     except ValueError:
         data = b""
     if not data:
-        return (
-            bytes((request.service_id,)),
-            "script request is not valid hex; sending the service byte only",
-        )
+        return b"", "script request is not valid hex"
     return data, None
 
 

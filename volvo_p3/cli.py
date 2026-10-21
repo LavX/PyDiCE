@@ -1123,7 +1123,9 @@ def _execute_run_plan(plan: RunPlan, timeout: float) -> RunResult:
 
     try:
         with DiceRpc() as rpc:
-            with DiceCanTransport(rpc, uds_requests=request_ids) as bus:
+            with DiceCanTransport(
+                rpc, uds_requests=request_ids, allow_read_services=True
+            ) as bus:
                 return run_plan(plan, bus, timeout=timeout)
     except (RuntimeError, OSError) as exc:
         raise ValueError(f"DiCE run failed: {exc}") from exc
