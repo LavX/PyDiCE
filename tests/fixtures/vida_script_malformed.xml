@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<script docno="VCC-999999" type="ReadDTCs">
+  <title>Truncated script</title>
+  <content>
+    <nodes>
+      <node class="Components.VehComm" nodeid="AE01_ECM">
