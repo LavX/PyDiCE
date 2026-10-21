@@ -1,0 +1,150 @@
+{
+  "schema": "pydice.vida_catalog",
+  "version": 1,
+  "source": {
+    "kind": "synthetic",
+    "generated_at": "2026-10-21T00:00:00Z",
+    "image": "tests/fixtures",
+    "databases": [
+      {
+        "name": "CarComRT",
+        "path": "synthetic/CarComRT_Data.MDF",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    ],
+    "extractor": "tests/fixtures/vida_catalog.json",
+    "language": "en-US",
+    "notes": [
+      "Synthetic fixture for the catalog loader and lookup tests.",
+      "No VIDA rows, VINs or personal data are present."
+    ]
+  },
+  "dtc_descriptions": [
+    {
+      "code": "P034211",
+      "long_text": "Camshaft Position Sensor A Circuit Low (Bank 1 or single sensor)",
+      "short_text": "Camshaft Position Sensor A Circuit Low",
+      "symptoms": [
+        "Rough running after a cold start",
+        "Reduced engine power"
+      ],
+      "causes": [
+        "Open or shorted camshaft position sensor circuit",
+        "Failed camshaft position sensor"
+      ],
+      "language": "en-US",
+      "source": "synthetic T150/T191"
+    },
+    {
+      "code": "P034211",
+      "ecu": "ECM",
+      "long_text": "ECM reports camshaft position sensor A circuit low",
+      "short_text": "CMP sensor A circuit low",
+      "symptoms": [
+        "MIL on"
+      ],
+      "causes": [
+        "Sensor circuit fault"
+      ],
+      "language": "en-US",
+      "source": "synthetic ECM row"
+    },
+    {
+      "code": "P010100",
+      "long_text": "Mass or Volume Air Flow A Circuit Range/Performance",
+      "short_text": "MAF A circuit range/performance",
+      "language": "en-US",
+      "source": "synthetic T150/T191"
+    },
+    {
+      "code": "P010101",
+      "long_text": "Mass or Volume Air Flow A Circuit Low",
+      "short_text": "MAF A circuit low",
+      "language": "en-US",
+      "source": "synthetic T150/T191"
+    },
+    {
+      "code": "P0342",
+      "long_text": "Camshaft Position Sensor A Circuit Malfunction",
+      "short_text": "CMP sensor A circuit",
+      "language": "en-US",
+      "source": "synthetic generic row"
+    }
+  ],
+  "timing": [
+    {
+      "ecu_variant": 329,
+      "request": "AE1B",
+      "message_timing_id": 1,
+      "timeout_and_resend_id": 0,
+      "p1max": 40,
+      "p3min": 110,
+      "p4min": 10,
+      "timeout_ms": 3000,
+      "resend": 0,
+      "comment": "SRS X40 01-04 AE 1B request DTCs"
+    },
+    {
+      "ecu_variant": 329,
+      "request": "B201",
+      "message_timing_id": 0,
+      "timeout_and_resend_id": 0,
+      "p1max": 40,
+      "p3min": 110,
+      "p4min": 10,
+      "timeout_ms": 3000,
+      "resend": 0,
+      "comment": "CCM/ECM X70 -00 B2 01 start self adjusting damper motor"
+    },
+    {
+      "ecu_variant": 329,
+      "request": "AE70",
+      "message_timing_id": 2,
+      "timeout_and_resend_id": 0,
+      "p1max": 99,
+      "p3min": 110,
+      "p4min": 2,
+      "timeout_ms": 3000,
+      "resend": 0,
+      "comment": "Same first byte, different second byte and timing"
+    },
+    {
+      "ecu_variant": 304,
+      "request": "01",
+      "message_timing_id": 2,
+      "timeout_and_resend_id": 0,
+      "p1max": 10,
+      "p3min": 110,
+      "p4min": 2,
+      "timeout_ms": 3000,
+      "resend": 0,
+      "comment": "One-byte request prefix"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "0b00c8af80206a61",
+      "title": "S40 (-04) 1999 B4164S",
+      "market": "EU",
+      "model": "S40",
+      "model_year": "1999"
+    }
+  ],
+  "scripts": [
+    {
+      "id": "VCC-227144",
+      "name": "Read DTCs",
+      "script_type": 10,
+      "language": "en-US",
+      "profiles": [
+        "0b00c8af80206a61"
+      ],
+      "ecu_address": 17,
+      "ecu_type": 831701,
+      "service_ids": [
+        5
+      ],
+      "source": "synthetic script"
+    }
+  ]
+}
