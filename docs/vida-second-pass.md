@@ -197,7 +197,10 @@ ConfigApplication
 `Name`, `BtAddress` and `FwdlApplication`. `J2534ChannelManager` selects a
 device from that map by `CommToolName`. `VehCom2.J2534.J2534Proxy..ctor(string)`
 calls `LoadDll(string)`, which calls `LoadLibrary` and resolves the PassThru
-entry points with `GetProcAddress`.
+entry points with `GetProcAddress`. `LoadDll` also binds six DiCE-specific
+ioctls: `DiceGetHardwareVersion`, `DiceGetWarrantyDate`, `DiceControlLed`,
+`DiceTest`, `ReadVBatt` and `ConnectionStrength`. `CanIdAddress` wraps three
+`u2` values.
 
 So `VehCom2` owns the load, but `Util.DLL` owns the registry model and the
 `FunctionLibrary` resolution. The earlier absence of the `FunctionLibrary`

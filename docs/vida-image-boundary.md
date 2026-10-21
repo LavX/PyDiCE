@@ -74,7 +74,10 @@ the DiCE and generic readers; `RegReader.FillDeviceInformation` reads `Vendor`,
 `FunctionLibrary` and `ConfigApplication` under
 `SOFTWARE\PassThruSupport.04.04\`. `VehCom2.J2534.J2534ChannelManager` selects a
 device by `CommToolName`, and `J2534Proxy.LoadDll` calls `LoadLibrary` and
-resolves the PassThru entry points. `UI.CommToolSetting.PopulateCommTools` fills
+resolves the PassThru entry points. `LoadDll` also binds six DiCE-specific
+ioctls: `DiceGetHardwareVersion`, `DiceGetWarrantyDate`, `DiceControlLed`,
+`DiceTest`, `ReadVBatt` and `ConnectionStrength`. `VehCom2`'s `CanIdAddress`
+wraps three `u2` values. `UI.CommToolSetting.PopulateCommTools` fills
 the selection list; `CommToolSetupButtonClick` launches the named
 `ConfigApplication`.
 

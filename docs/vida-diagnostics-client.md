@@ -242,7 +242,10 @@ comes from and what is attached as context, is in `docs/vida-dtc-readout.md`.
 
 `VehCom2.DLL` is the J2534 layer. `Util.DLL` resolves the `FunctionLibrary`
 value from the PassThru registry key; `VehCom2.J2534ChannelManager` selects by
-`CommToolName` and `J2534Proxy.LoadDll` loads it. Its strings show ISO15765 and
+`CommToolName` and `J2534Proxy.LoadDll` loads it. `LoadDll` also binds six
+DiCE-specific ioctls: `DiceGetHardwareVersion`, `DiceGetWarrantyDate`,
+`DiceControlLed`, `DiceTest`, `ReadVBatt` and `ConnectionStrength`; `CanIdAddress`
+wraps three `u2` values. Its strings show ISO15765 and
 ISO9141 handling, five-baud init
 (`Calling FiveBaudInit on address 0x{0:X}`, `fivebaudinit (RS2000)`), J2534-2
 detection, message filtering (`PassThruStartMsgFilter`, `FilterBuffer() invalid
