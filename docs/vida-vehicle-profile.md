@@ -296,7 +296,8 @@ sample, so it is not the near-term gap.
 7. **Do the timing values apply to CAN or only the K-line path?** The values are
    extracted (41 `Requests`, 3000 ms, no resend). A third-pass IL read puts
    DiceTiming on `D2onKApplicationDICE3`; CAN appears to use
-   `vadis_GetDiagTimings`, but its managed caller was not found.
+   `vadis_GetDiagTimings`, but its managed caller was not found and
+   `T121_Config` is empty in this snapshot, so the CAN join cannot be exercised.
 
 ## Caveats on the recovered SQL
 

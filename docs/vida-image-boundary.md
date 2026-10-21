@@ -237,28 +237,32 @@ means the available evidence goes against the earlier wording.
 | `NoCommConnection` is the bus-path gate | contradicted | empty `CommToolName` maps to `NOCOMM`, which throws at construction; the string is UI state |
 | The image has 64-bit and WOW6432Node registry views with different `FunctionLibrary` values | observed | `SOFTWARE` hive |
 | `DiceTiming` has 41 `Requests`, 3 `MessageTiming` and 1 `TimeoutAndResend` row; default 3000 ms, no resend | observed | page-level extraction |
-| The `T121_Config` row values are known | unverified | columns are catalogued; page headers did not carry the object id |
+| `T121_Config` has no page set in this snapshot | observed | catalog scan; legacy row counter 2766 |
 | Scripts are ZIP XML and `EcuAddress` is a node address | observed | ZIP header, `ZipInputStream`, `T121_Config.commAddress` |
 | The script `EcuAddress` is the `commAddress` side, not `canAddress` | observed | CarCom proc selects both; managed chain calls `commAddress` the node address |
 | `fkNodeECU` is a per-profile ECU list | contradicted | no shipped consumer; the script is the logical map and `T121_Config` the physical map |
 | `NodeECU` has 52 label rows and no address column | observed | BaseData page 12028 / auid 152 |
 | The DTC list procedure returns `T141_Block.name` as `Data`; `T147` is not the text join | observed | `vadis_GetAllPossibleDtcsOnEcu` |
+| `T147` has no `sysschobjs` or `syscolpars` object in this snapshot | observed | catalog search; name only in `syssoftobjrefs` |
+| The P034211 article phrase is inline in the servicerep `servinfosub` XML | observed | phrase text, no URN-to-id resolver |
 | The VIDA image holds no adapter command table | documented | targeted searches; absence is bounded by that coverage |
 
 ## Open questions
 
-1. **How complete is the script coverage?** Two concrete scripts were decoded.
-   The full set, and the bodies that fail CRC, remain unread.
+1. **How complete is the script coverage?** 44,983 bodies parse as XML, 2,047 are
+   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
+   pages. A type 10 read script (`VCC-227144`) is decoded; the truncated bodies
+   remain unread.
 2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
-   the columns, and the proc/managed chain puts `EcuAddress` on the `commAddress`
-   side, but its rows were not reachable by page parsing. A read-only SQL Server
-   attach on a copy would close it.
+   the schema, and the proc/managed chain puts `EcuAddress` on the `commAddress`
+   side. The table appears empty in this snapshot, so no CAN ID can be resolved
+   from the image; a runtime car configuration would populate it.
 3. **Does `T147` have a physical third column?** Only the two keys are visible
-   to every shipped query. The name is not in CarComRT `sysschobjs`; it appears
-   in `syssoftobjrefs`.
+   to every shipped query. The table has no `sysschobjs` or `syscolpars` object
+   in this snapshot, so the physical schema may be absent.
 4. **How does the article phrase map to text id 1,034,063?** The P034211 phrase
-   is `urn:x-nevis:phrase:0800c8af84c73062`, but the URN-to-id table was not
-   located.
+   `urn:x-nevis:phrase:0800c8af84c73062` is inline in the servicerep
+   `servinfosub` XML; no URN-to-text-id table or runtime resolver was found.
 5. **How does `EcuVariantId` map to a vehicle or ECU name?** The id is
    `T100_EcuVariant.id` via `T120_Config_EcuVariant`, and
    `EcuNameFromVariantId` uses `vadis_GetEcuVariantData`/`T102_EcuType.description`;

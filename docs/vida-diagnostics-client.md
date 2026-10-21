@@ -222,9 +222,17 @@ recovered fragment. VCC-241986, a ClearDtc script, carries `EcuType=381101` and
 service IDs 13, 41, 5, 6, 14, 63 and 66. `script/@VariantId` is a script id,
 not an ECU variant.
 
-`EcuAddress` is a one-byte CarCom node address, not a CAN request ID. It matches
-`T121_Config.commAddress`; the physical IDs are `T121_Config.CanIdRX`,
-`CanIdTX` and `CanIdFunc`, reached through `NodeAddressBuilder`.
+A carve found 89,229 PKZIP headers: 44,983 parse as XML bodies, 2,047 are
+complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
+pages. The complete set covers 1,472 docnos in 18 languages. Type 10 read
+script `VCC-227144` ("Read DTCs", en-US), recovered from offset `1985634414`,
+has 38 profile IDs, `EcuType=831701`, `ServiceId=5`, and a
+`DtcList` iterator binding `Dtc.value` and `Dtc.text`.
+
+`EcuAddress` is a one-byte CarCom node address, not a CAN request ID. It is the
+`T121_Config.commAddress` side; the table has the CAN-ID columns
+(`CanIdRX`, `CanIdTX`, `CanIdFunc`) but no rows in this snapshot, so no physical
+CAN ID is statically resolvable here.
 
 What happens after a script returns, including where the sentence beside a code
 comes from and what is attached as context, is in `docs/vida-dtc-readout.md`.
@@ -300,13 +308,16 @@ remaining work is coverage, not format.
 
 ## Open questions
 
-1. **What values do scripts carry?** Two scripts are decoded: VCC-242880 carries
-   `EcuAddress=17` and `ServiceId=71`; VCC-241986 carries `EcuType=381101` and
-   service IDs 13, 41, 5, 6, 14, 63 and 66. Coverage across script types and
-   platforms, and the bodies that fail CRC, remain unread.
-2. **What does `EcuAddress` mean on the wire?** It is a CarCom node address
-   (`T121_Config.commAddress`), not a CAN ID. `T121_Config` supplies
-   `CanIdRX`/`CanIdTX`/`CanIdFunc`; the mapping was not dumped per platform.
+1. **What values do scripts carry?** 44,983 bodies parse as XML, 2,047 are
+   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
+   pages. The complete set covers 1,472 docnos in 18 languages. VCC-242880
+   carries `EcuAddress=17` and `ServiceId=71`; VCC-241986 carries
+   `EcuType=381101` and service IDs 13, 41, 5, 6, 14, 63 and 66; VCC-227144 is
+   a type 10 read script. The truncated bodies remain unread.
+2. **What does `EcuAddress` mean on the wire?** It is the CarCom `commAddress`
+   side, not a CAN ID. `T121_Config` has `CanIdRX`/`CanIdTX`/`CanIdFunc`, but the
+   table appears empty in this snapshot, so the physical mapping is not available
+   statically.
 3. **What values does `VehType` take besides `p2x`?** No code branch or
    enumeration was found; it is a three-character string carried as data. The
    PIE WSDL constrains only its length.

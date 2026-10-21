@@ -163,15 +163,18 @@ There are three text paths, and only one is the DTC list data:
 For `0x034211`, the value row points at text id 1,004,326, "Camshaft Position
 Sensor A Circuit Low (Bank 1 or single sensor)". The long sentence text id
 1,034,063 is a real `T191` row, but no CarCom table referenced it in a raw
-4-byte scan. The P034211 article phrase is
-`urn:x-nevis:phrase:0800c8af84c73062`; the URN-to-id table was not located.
-The `0x034211` block is type 32, not type 10, so it is not a D2 possible-DTC
-row; the T150/T191 description is the generic OBD path.
+4-byte scan. The P034211 phrase `urn:x-nevis:phrase:0800c8af84c73062` lives
+inline in the servicerep `servinfosub` XML; no URN-to-id table or runtime
+resolver was found. The article path is separate from the DTC readout. The
+`0x034211` block is type 32, not type 10, so it is not a D2 possible-DTC row;
+the T150/T191 description is the generic OBD path.
 
 `DtcVO.Text` is populated from `T141_Block.name` by
 `CarComRepository.GetAllPossibleDtcsOnD2Ecu`, and from the script's `Dtc.Text`
-by `ScriptOutputConverter.GetDtcList`. The UI reads `Workflow.Dtc.Text`, not
-`DtcVO.Text`; on the GGD path that text is the `T150_BlockValue` value text.
+by `ScriptOutputConverter.GetDtcList`. Type 10 script VCC-227144 only names
+`Dtc.text`; `ResponseHandler.MatchBlock` builds it from `Block.get_DisplayText`
+(`PpeText` or `AsText`). The UI reads `Workflow.Dtc.Text`, not `DtcVO.Text`; on
+the GGD path that text is the `T150_BlockValue` value text.
 
 ## What is attached as context
 
@@ -345,15 +348,16 @@ platform can key descriptions by code directly.
 
 1. **What is the row-level join?** `T147_BlockMetaDTC` is not the text join; it
    carries `fkT141_Block` and `fkT100_EcuVariant`, and no third column is visible
-   to any shipped query. The DTC value text joins through
-   `T150_BlockValue.fkt190_text_value`. Remaining: the exact T150 block-id
-   offset and the URN-to-id mapping for the P034211 phrase
-   `urn:x-nevis:phrase:0800c8af84c73062`.
+   to any shipped query. The table has no `sysschobjs` or `syscolpars` object in
+   this snapshot, so its physical schema may be absent. The DTC value text joins
+   through `T150_BlockValue.fkt190_text_value`. Remaining: the exact T150
+   block-id offset.
 2. **Which row is the short name?** The DTC list procedure returns
    `T141_Block.name` as `Data`; `DtcVO.Text` is set from it on the
    possible-DTC path. The UI reads `Workflow.Dtc.Text`, not `DtcVO.Text`; on the
-   GGD path that text is the `T150_BlockValue` value text. The D2 script's
-   `Dtc.Text` source remains open.
+   GGD path that text is the `T150_BlockValue` value text. Type 10 script
+   `VCC-227144` names `Dtc.text`; which of `PpeText`/`AsText` dominates for D2
+   remains open.
 3. **How is the code string built?** `T150_BlockValue.CompareValue` is text
    (`0x034211`), and the same row carries `P034211`. Whether VIDA formats the
    letter prefix in IL or reads it from a text row was not determined.

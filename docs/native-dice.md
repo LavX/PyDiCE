@@ -57,7 +57,7 @@ Two points matter for this transport. First, on the Java side those profile IDs 
 
 Until a per-profile module mapping is established, `module_scan` target selection stays explicit: `P3_D6_MODULES`, a discovery sweep, or a JSON profile. The transferable idea is the shape, not the tables: nullable components with wildcard matching and an always-valid generic profile, resolving to a set of module profiles that get scanned as a union.
 
-The diagnostic client selects a ZIP XML script by that same profile set. Decoded `Components.VehComm` nodes carry `EcuAddress`/`EcuType` and `ServiceId`; `EcuAddress` is a CarCom node address, and `T121_Config` supplies the CAN IDs. `VehType` is `p2x` in the shipped config, but it is a three-character data value, not a branch. `volvo_p3` still needs its own explicit `P3_D6_MODULES` or discovery profile. The client is written up in `docs/vida-diagnostics-client.md`; the second pass is in `docs/vida-second-pass.md`.
+The diagnostic client selects a ZIP XML script by that same profile set. Decoded `Components.VehComm` nodes carry `EcuAddress`/`EcuType` and `ServiceId`; `EcuAddress` is a CarCom node address. `T121_Config` has the CAN-ID columns but no rows in this snapshot, so the physical IDs are not statically available here. `VehType` is `p2x` in the shipped config, but it is a three-character data value, not a branch. `volvo_p3` still needs its own explicit `P3_D6_MODULES` or discovery profile. The client is written up in `docs/vida-diagnostics-client.md`; the second pass is in `docs/vida-second-pass.md`.
 
 The full recovery, including the cascade SQL and the stored procedures, is in `docs/vida-vehicle-profile.md`.
 

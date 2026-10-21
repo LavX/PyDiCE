@@ -71,6 +71,15 @@ script for X40 MY1999-2000 Diesel, carries `EcuType=381101` and service IDs 13,
 VCC-241986 passed its CRC; VCC-242880's body failed, so its node values come
 from the recovered fragment.
 
+A full carve found 89,229 PKZIP headers. Of those, 44,983 parse as XML script
+bodies, 2,047 are complete with a verified CRC, and 42,936 are truncated by
+non-contiguous LOB pages. The complete set covers 1,472 distinct docnos in 18
+languages. Type 10 read script `VCC-227144`, "Read DTCs", en-US, recovered from
+offset `1985634414`, has 38 profile IDs, `EcuType=831701`,
+`ServiceId=5`, and a `DtcList` iterator binding `Dtc.value` and `Dtc.text`.
+`VCC-234665` is a richer sibling using `EcuType=284101`, `ServiceId=5` for the
+list and `ServiceId=19` per code.
+
 `script/@VariantId` is a script identifier, not an ECU variant. `EcuVariantId`
 is not serialized in the address script. It is resolved from the address through
 CarCom, as section 2 describes.
@@ -107,7 +116,10 @@ selects the logical ECU, and CarCom resolves the physical CAN IDs.
 The CarCom procedure selects `T121_Config.commAddress AS NodeAddress` and
 `canAddress AS CanAddress` side by side, and the managed chain calls
 `commAddress` the node address. The script's `EcuAddress` is therefore the
-`commAddress` side, not `canAddress`. The row values were not extracted.
+`commAddress` side, not `canAddress`. The shipped snapshot has no T121_Config
+page set; the table appears empty here, despite a legacy row counter of 2766.
+No CAN ID can be resolved from this image; a runtime car configuration would
+populate the table.
 
 ## 2. The profile does not carry an ECU list
 
@@ -283,8 +295,12 @@ code column, text id column or language column was observed. The catalog has
 `T141_Block` rows of type 10 overwhelmingly carry `fkt190_Text = 0`.
 
 The DTC list procedure therefore returns `T141_Block.name`, the structured fault
-text, as `Data`. The `DtcVO.Text` and UI `Dtc.Text` binding is in section 5. For
-block `1107137` the name is:
+text, as `Data`. The `DtcVO.Text` and UI `Dtc.Text` binding is in section 5.
+Type 10 script `VCC-227144` only names `Dtc.text`; `ResponseHandler.MatchBlock`
+builds `text` from `Block.get_DisplayText`, which is `T141_Block.name`
+(`PpeText`) or the `T150` to `T191` `AsText` lookup. `ScriptOutputConverter.GetDtcList`
+stores `Dtc.Text` in `DtcVO.Text`. The script has no literal text. For block
+`1107137` the name is:
 
 ```
 Ignition system/Misfire, Camshaft pos sensor, Camshaft pos sensor,
@@ -366,11 +382,13 @@ possible-DTC row; the T150/T191 description is the generic OBD path.
 
 `T147_BlockMetaDTC` exposes only `fkT141_Block` and `fkT100_EcuVariant` to every
 shipped query, assembly, Java class, JSP and script. No third column is visible.
-The name is not in CarComRT `sysschobjs`; it appears in `syssoftobjrefs`, so the
-physical schema remains unresolved. Text id 1,034,063 is referenced only from
-T190/T191/T192 text-store pages; no DTC, block, script or application table
-points at it. The P034211 article phrase is
-`urn:x-nevis:phrase:0800c8af84c73062`; the URN-to-id mapping was not located.
+It has no `sysschobjs` or `syscolpars` object in this snapshot; the name appears
+in `syssoftobjrefs`, so the physical schema is unresolved and may be absent.
+Text id 1,034,063 is referenced only from T190/T191/T192 text-store pages; no
+DTC, block, script or application table points at it. The P034211 phrase
+`urn:x-nevis:phrase:0800c8af84c73062` lives inline in the servicerep
+`servinfosub` XML, with no URN-to-text-id table or runtime resolver. The article
+path is separate from the DTC readout.
 
 ### NodeECU and T121 schema
 
@@ -381,18 +399,18 @@ consumer, it is best read as editorial residue, not a per-profile address list.
 `T121_Config` has `id`, `fkT123_Bus`, `fkT122_Protocol`, `fkT130_Init_Diag`,
 `fkT130_Init_Timing`, `physicalAddress`, `functionalAddress`, `canAddress`,
 `commAddress`, `priority`, `canIdTX`, `canIdRX`, `canIdFunc`, `canIdUUDT`,
-`busRate`, `addressSize` and `fkT121_Config_Gateway`. Its rows were not reachable
-by page parsing: the page headers do not carry the catalog object ids, and the
-`sys.sysrowsets` indirection was not decoded. The proc and managed chain put the
-script's `EcuAddress` on the `commAddress` side, but the concrete values remain
-open.
+`busRate`, `addressSize` and `fkT121_Config_Gateway`. A third-pass catalog scan
+found no page set under the identifiers that find every populated table; the
+table appears empty in this snapshot, despite a legacy row counter of 2766. The
+proc and managed chain put `EcuAddress` on the `commAddress` side, but no CAN ID
+can be resolved from this image.
 
 ## 6. Corrections to the first notes
 
 | First note | Correction |
 | --- | --- |
 | `vida-diagnostics-client.md` says script bodies are unopened and the compression scheme is unknown | ZIP plus deflate; bodies decoded |
-| `vida-diagnostics-client.md` treats `EcuAddress` as possible CAN addressing | It is a CarCom node address; `T121_Config` holds the CAN IDs |
+| `vida-diagnostics-client.md` treats `EcuAddress` as possible CAN addressing | It is a CarCom `commAddress`; `T121_Config` has the CAN-ID columns but no rows in this snapshot |
 | `vida-diagnostics-client.md` calls `VehType` a platform switch | It is a 3-character data field; no branch or enumeration found |
 | `vida-vehicle-profile.md` calls `fkNodeECU` the best lead for a per-profile ECU list | No shipped consumer found; the script is the logical map and CarCom is the physical map |
 | `native-dice.md` repeats the `fkNodeECU` lead and the `VehType` switch | Same corrections |
@@ -406,29 +424,32 @@ open.
 
 ## 7. Remaining open questions
 
-1. **How much script coverage is there?** Two concrete scripts were decoded.
-   The full script set, and the bodies that fail CRC, remain unread.
-2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config`
-   supplies the columns, and the proc/managed chain puts `EcuAddress` on the
-   `commAddress` side. Its rows were not reachable by page parsing; a read-only
-   SQL Server attach on a copy would close it.
+1. **How much script coverage is there?** 44,983 bodies parse as XML, 2,047 are
+   complete with a verified CRC, and 42,936 are truncated by non-contiguous LOB
+   pages. The complete set covers 1,472 docnos in 18 languages; a type 10 read
+   script (`VCC-227144`) is decoded, but the truncated bodies remain unread.
+2. **What is the complete `EcuAddress` to CAN-ID mapping?** `T121_Config` has
+   the schema, and the proc/managed chain puts `EcuAddress` on the
+   `commAddress` side. The table appears empty in this snapshot, so no CAN ID
+   can be resolved from the image; a runtime car configuration would populate it.
 3. **Does `T147` have a physical third column?** Only the two keys are visible
-   to every shipped query. The name is not in CarComRT `sysschobjs`; it appears
-   in `syssoftobjrefs`, so the physical schema remains unresolved.
+   to every shipped query. The table has no `sysschobjs` or `syscolpars` object
+   in this snapshot, so the physical schema may be absent.
 4. **How does the article phrase map to text id 1,034,063?** The P034211 phrase
-   is `urn:x-nevis:phrase:0800c8af84c73062`, but the URN-to-id table was not
-   located.
-5. **What produces the D2 script's `Dtc.Text`?** `DtcOutput.AddDtc` has no
-   direct caller in `BizServices.Scripting.DLL`; the script engine likely calls
-   it. A type 10 read script would settle the source.
+   `urn:x-nevis:phrase:0800c8af84c73062` is inline in the servicerep
+   `servinfosub` XML; no URN-to-text-id table or runtime resolver was found.
+5. **Does the D2 script choose `PpeText` or `AsText`?** The type 10 script names
+   `Dtc.text`, and `Block.get_DisplayText` falls back from `AsText` to
+   `PpeText`. Which side dominates for D2 remains open; the type 10 script does
+   not carry a literal.
 6. **How does `EcuVariantId` map to a vehicle or ECU name?** The id is
    `T100_EcuVariant.id` via `T120_Config_EcuVariant`, and
    `EcuNameFromVariantId` uses `vadis_GetEcuVariantData`/`T102_EcuType.description`;
    the T102 rows were not read.
 7. **Does DiceTiming drive CAN or only the K-line D2 path?** A third-pass IL read
    puts it on `D2onKApplicationDICE3`, while CAN appears to use
-   `vadis_GetDiagTimings`; no managed caller for the CAN proc was found, so the
-   split remains unverified.
+   `vadis_GetDiagTimings`; no managed caller for the CAN proc was found, and
+   `T121_Config` is empty in this snapshot, so the split remains unverified.
 8. **How are the timing values applied per session?** `P2CanServerMax` and the
    session-parameter adjustment are visible in strings, but the exact runtime
    arithmetic was not traced.
@@ -497,15 +518,14 @@ The DiceTiming pages have a stale first slot entry pointing into the padded
 comment of the first record. The rows were read from the free-space pointer and
 the contiguous record chain; the values match the row comments.
 
-`T121_Config` rows were not reachable by page parsing: the page headers do not
-carry the catalog object ids, and the `sys.sysrowsets` indirection was not
-decoded. `NodeECU` was reached by content instead: auid 152, page 12028, 52 label
-rows. Both schemas come from `sys.syscolpars`; the `T121_Config` row count
-remains unknown.
+`T121_Config` has no page set under the tags that find every populated table; it
+appears empty in this snapshot, despite a legacy row counter of 2766. `NodeECU`
+was reached by content instead: auid 152, page 12028, 52 label rows. Both schemas
+come from `sys.syscolpars`.
 
 Some script bodies fail their CRC and were not used. The decoded values are
 examples, not a complete census.
 
 `fkNodeECU` is a bounded negative over the shipped artifacts, not a proof that
 the table is unused in every deployment. `NodeECU` has 52 labels and no address
-column; `T121_Config` rows remain unread.
+column; `T121_Config` appears empty in this snapshot.
