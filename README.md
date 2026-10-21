@@ -53,12 +53,14 @@ proof that a module is absent or fault-free.
 
 ### Diagnostic data views
 
-The diagnostic data layer exports the recovered DTC descriptions and request timing from
-the image, parses diagnostic script bodies, and builds read-only DTC, network and
-fault-trace views. The catalog export needs no SQL Server.
+The diagnostic data layer exports the recovered DTC descriptions, request timing,
+vehicle profiles and diagnostic script entries from the image, parses script
+bodies, and builds read-only DTC, network and fault-trace views. The catalog
+export needs no SQL Server.
 
 ```sh
 python3 tools/export_diag_catalog.py --image /mnt/vida --out reports/diag_catalog.json
+python3 tools/export_diag_catalog.py --image /mnt/vida --dump-dir reports/diag-dump
 python3 -m volvo_p3.cli diag-report --scan reports/dice-scan-TIMESTAMP.json --catalog reports/diag_catalog.json
 sudo python3 -m volvo_p3.cli dice-scan --discover --diag-catalog reports/diag_catalog.json
 python3 -m volvo_p3.cli diag-script --script path/to/script.zip

@@ -9,13 +9,13 @@ asks at runtime:
 * How long should a request to this ECU variant wait?
 * Which profiles and scripts does the catalog know about?
 
-The catalog file is JSON only. It has five sections:
+The catalog file is JSON only. It has seven sections:
 
 .. code-block:: json
 
     {
       "schema": "pydice.diag_catalog",
-      "version": 1,
+      "version": 2,
       "source": {
         "kind": "source-mdf",
         "generated_at": "2026-10-21T12:00:00Z",
@@ -53,11 +53,28 @@ The catalog file is JSON only. It has five sections:
         }
       ],
       "profiles": [
-        {"id": "0b00c8af80206a61", "title": "S40 (-04) 1999 B4164S"}
+        {
+          "id": "0b00c8af80206a61",
+          "title": "S40 (-04) 1999 B4164S",
+          "model": "S40 (-04)",
+          "model_year": "1999",
+          "engine": "B4164S",
+          "markets": ["EUR"]
+        }
       ],
       "scripts": [
-        {"id": "VCC-227144", "name": "Read DTCs", "script_type": 10}
-      ]
+        {
+          "id": "VCC-227144",
+          "name": "Read DTCs",
+          "script_type": 10,
+          "script_type_name": "ReadDTCs",
+          "profiles": ["0b00c8af80206a61"],
+          "ecus": [{"ecu_address": 17, "service_ids": [5]}],
+          "status": "crc-verified"
+        }
+      ],
+      "symptom_definitions": [],
+      "freeze_frames": []
     }
 
 A DTC entry with ``"ecu": null`` or no ``ecu`` key is global. A caller that
@@ -75,12 +92,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 
 SCHEMA_NAME = "pydice.diag_catalog"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
 
 _HEX_DIGITS = frozenset("0123456789ABCDEF")
 _DTC_LETTERS = "PCBU"
@@ -159,30 +178,123 @@ class TimingEntry:
 
 @dataclass(frozen=True)
 class VehicleProfile:
-    """One vehicle profile, as exported from BaseData."""
+    """One vehicle profile, as exported from BaseData.
+
+    Every component is nullable, matching the source model. A null component
+    is a wildcard when a selection is resolved, so the profile is deliberately
+    not flattened into one vehicle type. ``markets`` keeps every partner group
+    the profile is mapped to; ``market`` is the primary one when one is known.
+    """
 
     id: str
     title: Optional[str] = None
     market: Optional[str] = None
     model: Optional[str] = None
     model_year: Optional[str] = None
+    engine: Optional[str] = None
+    transmission: Optional[str] = None
+    steering: Optional[str] = None
+    body_style: Optional[str] = None
+    special_vehicle: Optional[str] = None
+    suspension: Optional[str] = None
+    brake_system: Optional[str] = None
+    structure_week: Optional[str] = None
     chassis_from: Optional[str] = None
     chassis_to: Optional[str] = None
+    folder_level: Optional[int] = None
+    node_ecu: Optional[str] = None
+    markets: Tuple[str, ...] = ()
     notes: Optional[str] = None
+
+    def component_summary(self) -> str:
+        """Return the non-null components as a short readable line."""
+
+        values = [
+            self.model,
+            self.model_year,
+            self.engine,
+            self.transmission,
+            self.steering,
+            self.body_style,
+            self.special_vehicle,
+        ]
+        return ", ".join(value for value in values if value)
+
+
+@dataclass(frozen=True)
+class ScriptEcu:
+    """One addressed ECU node inside a recovered diagnostic script."""
+
+    ecu_address: Optional[int] = None
+    ecu_type: Optional[int] = None
+    tester_address: Optional[int] = None
+    service_ids: Tuple[int, ...] = ()
+    mode: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ScriptEntry:
-    """One diagnostic script, when the exporter can recover it."""
+    """One diagnostic script, when the exporter can recover it.
+
+    ``script_type`` is the numeric script type when the source wrote one;
+    ``script_type_name`` keeps the symbolic value (``ReadDTCs``, ``ClearDtc``)
+    because the source uses both spellings. ``status`` is ``crc-verified`` or
+    ``crc-mismatch``. A script whose body failed its CRC is exported with that
+    status rather than dropped.
+    """
 
     id: str
     name: Optional[str] = None
     script_type: Optional[int] = None
+    script_type_name: Optional[str] = None
     language: Optional[str] = None
     profiles: Tuple[str, ...] = ()
     ecu_address: Optional[int] = None
     ecu_type: Optional[int] = None
     service_ids: Tuple[int, ...] = ()
+    ecus: Tuple[ScriptEcu, ...] = ()
+    dtc_list_path: Optional[str] = None
+    dtc_value_path: Optional[str] = None
+    dtc_text_path: Optional[str] = None
+    read_only_service_ids: Tuple[int, ...] = ()
+    status: Optional[str] = None
+    body_sha256: Optional[str] = None
+    xml_path: Optional[str] = None
+    source: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SymptomEntry:
+    """One service symptom, with the causes attached to it.
+
+    The source keeps the symptom text, category, type and section in separate
+    tables and joins them by id. A null field means the source row was absent
+    or the table could not be read; the exporter records which in ``source``.
+    """
+
+    id: str
+    text: Optional[str] = None
+    category: Optional[str] = None
+    symptom_type: Optional[str] = None
+    section: Optional[str] = None
+    csc: Optional[str] = None
+    causes: Tuple[str, ...] = ()
+    dtc_codes: Tuple[str, ...] = ()
+    ecu_variants: Tuple[int, ...] = ()
+    source: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class FreezeFrameEntry:
+    """One candidate freeze-frame parameter for a DTC or an ECU variant."""
+
+    parameter: str
+    dtc_code: Optional[str] = None
+    ecu: Optional[str] = None
+    value: Optional[str] = None
+    unit: Optional[str] = None
+    block_id: Optional[int] = None
+    confirmed: bool = False
     source: Optional[str] = None
 
 
@@ -195,10 +307,18 @@ class DiagnosticCatalog:
     timing: Tuple[TimingEntry, ...] = ()
     profiles: Tuple[VehicleProfile, ...] = ()
     scripts: Tuple[ScriptEntry, ...] = ()
+    symptom_definitions: Tuple[SymptomEntry, ...] = ()
+    freeze_frames: Tuple[FreezeFrameEntry, ...] = ()
     _dtc_index: Dict[str, Tuple[DtcDescription, ...]] = field(
         default_factory=dict, repr=False, compare=False
     )
     _timing_index: Dict[int, Tuple[TimingEntry, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _profile_index: Dict[str, Tuple[VehicleProfile, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _script_index: Dict[str, Tuple[ScriptEntry, ...]] = field(
         default_factory=dict, repr=False, compare=False
     )
 
@@ -219,6 +339,24 @@ class DiagnosticCatalog:
             self,
             "_timing_index",
             {variant: tuple(entries) for variant, entries in timing_index.items()},
+        )
+
+        profile_index: Dict[str, List[VehicleProfile]] = {}
+        for profile in self.profiles:
+            profile_index.setdefault(profile.id, []).append(profile)
+        object.__setattr__(
+            self,
+            "_profile_index",
+            {key: tuple(value) for key, value in profile_index.items()},
+        )
+
+        script_index: Dict[str, List[ScriptEntry]] = {}
+        for script in self.scripts:
+            script_index.setdefault(script.id, []).append(script)
+        object.__setattr__(
+            self,
+            "_script_index",
+            {key: tuple(value) for key, value in script_index.items()},
         )
 
     # DTC lookups ---------------------------------------------------------
@@ -309,6 +447,48 @@ class DiagnosticCatalog:
             return None
         return _collapse_timing(matches)
 
+    # Profile and script lookups ------------------------------------------
+
+    def lookup_profile(self, profile_id: str) -> Optional[VehicleProfile]:
+        """Return the profile with exactly ``profile_id``, or ``None``.
+
+        The id is the 16-hex profile identifier the scripts carry. Case is
+        ignored. If the catalog has more than one row with the same id, the
+        first one in catalog order is returned; ``iter_profiles`` still shows
+        every row.
+        """
+
+        if not isinstance(profile_id, str):
+            return None
+        key = profile_id.strip().lower()
+        if not key:
+            return None
+        entries = self._profile_index.get(key)
+        if entries:
+            return entries[0]
+        for stored, values in self._profile_index.items():
+            if stored.lower() == key:
+                return values[0]
+        return None
+
+    def lookup_scripts(self, script_id: str) -> Tuple[ScriptEntry, ...]:
+        """Return every recovered script with ``script_id``.
+
+        A document number can occur in more than one language or in more than
+        one damaged variant, so this returns a tuple rather than one entry.
+        """
+
+        if not isinstance(script_id, str):
+            return ()
+        key = script_id.strip().upper()
+        exact = self._script_index.get(key)
+        if exact:
+            return exact
+        for stored, values in self._script_index.items():
+            if stored.upper() == key:
+                return values
+        return ()
+
     # Section iterators --------------------------------------------------
 
     def iter_profiles(self) -> Iterator[VehicleProfile]:
@@ -320,6 +500,28 @@ class DiagnosticCatalog:
         """Yield every diagnostic script in catalog order."""
 
         return iter(self.scripts)
+
+    def iter_symptoms(self) -> Iterator[SymptomEntry]:
+        """Yield every symptom definition in catalog order."""
+
+        return iter(self.symptom_definitions)
+
+    def iter_freeze_frames(self) -> Iterator[FreezeFrameEntry]:
+        """Yield every freeze-frame candidate in catalog order."""
+
+        return iter(self.freeze_frames)
+
+    def counts(self) -> Dict[str, int]:
+        """Return row counts for every catalog section."""
+
+        return {
+            "dtc_descriptions": len(self.dtc_descriptions),
+            "timing": len(self.timing),
+            "profiles": len(self.profiles),
+            "scripts": len(self.scripts),
+            "symptom_definitions": len(self.symptom_definitions),
+            "freeze_frames": len(self.freeze_frames),
+        }
 
 
 # Public helpers ---------------------------------------------------------
@@ -398,6 +600,35 @@ def normalize_request_bytes(
     return raw
 
 
+def sanitize_text(value: Optional[str]) -> Optional[str]:
+    """Return readable text with decoding artefacts removed.
+
+    Replacement characters, NULs and control bytes are turned into spaces
+    instead of being dropped, so a damaged row still shows where text was lost.
+    Whitespace is collapsed but line breaks are kept. ``None`` stays ``None``.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("text must be a string or None")
+    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    chars: List[str] = []
+    for char in text:
+        if char == "\ufffd" or char == "\x00":
+            chars.append(" ")
+        elif char in "\n\t":
+            chars.append(char)
+        elif char.isprintable():
+            chars.append(char)
+        else:
+            chars.append(" ")
+    cleaned = "".join(chars)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def load_catalog(path: Union[str, os.PathLike[str]]) -> DiagnosticCatalog:
     """Load and validate a catalog JSON file.
 
@@ -432,10 +663,10 @@ def catalog_from_dict(document: Mapping[str, Any]) -> DiagnosticCatalog:
     version = root.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise CatalogError("catalog version must be an integer")
-    if version != SCHEMA_VERSION:
+    if version not in SUPPORTED_VERSIONS:
         raise CatalogError(
-            "unsupported catalog version {}; expected {}".format(
-                version, SCHEMA_VERSION
+            "unsupported catalog version {}; expected one of {}".format(
+                version, ", ".join(str(item) for item in SUPPORTED_VERSIONS)
             )
         )
 
@@ -462,6 +693,18 @@ def catalog_from_dict(document: Mapping[str, Any]) -> DiagnosticCatalog:
             _require_list(root.get("scripts"), "scripts")
         )
     )
+    symptom_definitions = tuple(
+        _parse_symptom(item, "symptom_definitions[{}]".format(index))
+        for index, item in enumerate(
+            _optional_list(root.get("symptom_definitions"), "symptom_definitions")
+        )
+    )
+    freeze_frames = tuple(
+        _parse_freeze_frame(item, "freeze_frames[{}]".format(index))
+        for index, item in enumerate(
+            _optional_list(root.get("freeze_frames"), "freeze_frames")
+        )
+    )
 
     return DiagnosticCatalog(
         source=source,
@@ -469,6 +712,8 @@ def catalog_from_dict(document: Mapping[str, Any]) -> DiagnosticCatalog:
         timing=timing,
         profiles=profiles,
         scripts=scripts,
+        symptom_definitions=symptom_definitions,
+        freeze_frames=freeze_frames,
     )
 
 
@@ -519,8 +764,19 @@ def catalog_to_dict(catalog: DiagnosticCatalog) -> Dict[str, Any]:
                     "market": entry.market,
                     "model": entry.model,
                     "model_year": entry.model_year,
+                    "engine": entry.engine,
+                    "transmission": entry.transmission,
+                    "steering": entry.steering,
+                    "body_style": entry.body_style,
+                    "special_vehicle": entry.special_vehicle,
+                    "suspension": entry.suspension,
+                    "brake_system": entry.brake_system,
+                    "structure_week": entry.structure_week,
                     "chassis_from": entry.chassis_from,
                     "chassis_to": entry.chassis_to,
+                    "folder_level": entry.folder_level,
+                    "node_ecu": entry.node_ecu,
+                    "markets": list(entry.markets),
                     "notes": entry.notes,
                 }
             )
@@ -532,15 +788,67 @@ def catalog_to_dict(catalog: DiagnosticCatalog) -> Dict[str, Any]:
                     "id": entry.id,
                     "name": entry.name,
                     "script_type": entry.script_type,
+                    "script_type_name": entry.script_type_name,
                     "language": entry.language,
                     "profiles": list(entry.profiles),
                     "ecu_address": entry.ecu_address,
                     "ecu_type": entry.ecu_type,
                     "service_ids": list(entry.service_ids),
+                    "ecus": [
+                        _compact(
+                            {
+                                "ecu_address": ecu.ecu_address,
+                                "ecu_type": ecu.ecu_type,
+                                "tester_address": ecu.tester_address,
+                                "service_ids": list(ecu.service_ids),
+                                "mode": ecu.mode,
+                            }
+                        )
+                        for ecu in entry.ecus
+                    ],
+                    "dtc_list_path": entry.dtc_list_path,
+                    "dtc_value_path": entry.dtc_value_path,
+                    "dtc_text_path": entry.dtc_text_path,
+                    "read_only_service_ids": list(entry.read_only_service_ids),
+                    "status": entry.status,
+                    "body_sha256": entry.body_sha256,
+                    "xml_path": entry.xml_path,
                     "source": entry.source,
                 }
             )
             for entry in catalog.scripts
+        ],
+        "symptom_definitions": [
+            _compact(
+                {
+                    "id": entry.id,
+                    "text": entry.text,
+                    "category": entry.category,
+                    "symptom_type": entry.symptom_type,
+                    "section": entry.section,
+                    "csc": entry.csc,
+                    "causes": list(entry.causes),
+                    "dtc_codes": list(entry.dtc_codes),
+                    "ecu_variants": list(entry.ecu_variants),
+                    "source": entry.source,
+                }
+            )
+            for entry in catalog.symptom_definitions
+        ],
+        "freeze_frames": [
+            _compact(
+                {
+                    "parameter": entry.parameter,
+                    "dtc_code": entry.dtc_code,
+                    "ecu": entry.ecu,
+                    "value": entry.value,
+                    "unit": entry.unit,
+                    "block_id": entry.block_id,
+                    "confirmed": entry.confirmed,
+                    "source": entry.source,
+                }
+            )
+            for entry in catalog.freeze_frames
         ],
     }
 
@@ -588,6 +896,8 @@ def _require_text(value: Any, where: str) -> str:
 def _optional_text(value: Any, where: str) -> Optional[str]:
     if value is None:
         return None
+    if isinstance(value, str) and not value.strip():
+        return None
     return _require_text(value, where)
 
 
@@ -605,6 +915,14 @@ def _optional_int(
         raise CatalogError("{} must be at least {}".format(where, minimum))
     if maximum is not None and value > maximum:
         raise CatalogError("{} must be at most {}".format(where, maximum))
+    return value
+
+
+def _optional_bool(value: Any, where: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise CatalogError("{} must be true or false".format(where))
     return value
 
 
@@ -643,6 +961,16 @@ def _int_tuple(value: Any, where: str, maximum_length: Optional[int] = None) -> 
     if maximum_length is not None and len(result) > maximum_length:
         raise CatalogError(
             "{} must have at most {} entries".format(where, maximum_length)
+        )
+    return tuple(result)
+
+
+def _int_tuple_unbounded(value: Any, where: str) -> Tuple[int, ...]:
+    items = _optional_list(value, where)
+    result: List[int] = []
+    for index, item in enumerate(items):
+        result.append(
+            _require_int(item, "{}[{}]".format(where, index), minimum=0)
         )
     return tuple(result)
 
@@ -735,21 +1063,70 @@ def _parse_profile(value: Any, where: str) -> VehicleProfile:
         market=_optional_text(data.get("market"), where + ".market"),
         model=_optional_text(data.get("model"), where + ".model"),
         model_year=_optional_text(data.get("model_year"), where + ".model_year"),
+        engine=_optional_text(data.get("engine"), where + ".engine"),
+        transmission=_optional_text(
+            data.get("transmission"), where + ".transmission"
+        ),
+        steering=_optional_text(data.get("steering"), where + ".steering"),
+        body_style=_optional_text(data.get("body_style"), where + ".body_style"),
+        special_vehicle=_optional_text(
+            data.get("special_vehicle"), where + ".special_vehicle"
+        ),
+        suspension=_optional_text(data.get("suspension"), where + ".suspension"),
+        brake_system=_optional_text(
+            data.get("brake_system"), where + ".brake_system"
+        ),
+        structure_week=_optional_text(
+            data.get("structure_week"), where + ".structure_week"
+        ),
         chassis_from=_optional_text(
             data.get("chassis_from"), where + ".chassis_from"
         ),
         chassis_to=_optional_text(data.get("chassis_to"), where + ".chassis_to"),
+        folder_level=_optional_int(
+            data.get("folder_level"), where + ".folder_level", minimum=0
+        ),
+        node_ecu=_optional_text(data.get("node_ecu"), where + ".node_ecu"),
+        markets=_text_tuple(data.get("markets"), where + ".markets"),
         notes=_optional_text(data.get("notes"), where + ".notes"),
+    )
+
+
+def _parse_script_ecu(value: Any, where: str) -> ScriptEcu:
+    data = _require_mapping(value, where)
+    return ScriptEcu(
+        ecu_address=_optional_int(
+            data.get("ecu_address"), where + ".ecu_address", minimum=0
+        ),
+        ecu_type=_optional_int(
+            data.get("ecu_type"), where + ".ecu_type", minimum=0
+        ),
+        tester_address=_optional_int(
+            data.get("tester_address"), where + ".tester_address", minimum=0
+        ),
+        service_ids=_int_tuple(
+            data.get("service_ids"), where + ".service_ids"
+        ),
+        mode=_optional_text(data.get("mode"), where + ".mode"),
     )
 
 
 def _parse_script(value: Any, where: str) -> ScriptEntry:
     data = _require_mapping(value, where)
+    ecus = tuple(
+        _parse_script_ecu(item, "{}.ecus[{}]".format(where, index))
+        for index, item in enumerate(
+            _optional_list(data.get("ecus"), where + ".ecus")
+        )
+    )
     return ScriptEntry(
         id=_require_text(data.get("id"), where + ".id"),
         name=_optional_text(data.get("name"), where + ".name"),
         script_type=_optional_int(
             data.get("script_type"), where + ".script_type", minimum=0
+        ),
+        script_type_name=_optional_text(
+            data.get("script_type_name"), where + ".script_type_name"
         ),
         language=_optional_text(data.get("language"), where + ".language"),
         profiles=_text_tuple(data.get("profiles"), where + ".profiles"),
@@ -761,6 +1138,63 @@ def _parse_script(value: Any, where: str) -> ScriptEntry:
         ),
         service_ids=_int_tuple(
             data.get("service_ids"), where + ".service_ids"
+        ),
+        ecus=ecus,
+        dtc_list_path=_optional_text(
+            data.get("dtc_list_path"), where + ".dtc_list_path"
+        ),
+        dtc_value_path=_optional_text(
+            data.get("dtc_value_path"), where + ".dtc_value_path"
+        ),
+        dtc_text_path=_optional_text(
+            data.get("dtc_text_path"), where + ".dtc_text_path"
+        ),
+        read_only_service_ids=_int_tuple(
+            data.get("read_only_service_ids"),
+            where + ".read_only_service_ids",
+        ),
+        status=_optional_text(data.get("status"), where + ".status"),
+        body_sha256=_optional_text(
+            data.get("body_sha256"), where + ".body_sha256"
+        ),
+        xml_path=_optional_text(data.get("xml_path"), where + ".xml_path"),
+        source=_optional_text(data.get("source"), where + ".source"),
+    )
+
+
+def _parse_symptom(value: Any, where: str) -> SymptomEntry:
+    data = _require_mapping(value, where)
+    return SymptomEntry(
+        id=_require_text(data.get("id"), where + ".id"),
+        text=_optional_text(data.get("text"), where + ".text"),
+        category=_optional_text(data.get("category"), where + ".category"),
+        symptom_type=_optional_text(
+            data.get("symptom_type"), where + ".symptom_type"
+        ),
+        section=_optional_text(data.get("section"), where + ".section"),
+        csc=_optional_text(data.get("csc"), where + ".csc"),
+        causes=_text_tuple(data.get("causes"), where + ".causes"),
+        dtc_codes=_text_tuple(data.get("dtc_codes"), where + ".dtc_codes"),
+        ecu_variants=_int_tuple_unbounded(
+            data.get("ecu_variants"), where + ".ecu_variants"
+        ),
+        source=_optional_text(data.get("source"), where + ".source"),
+    )
+
+
+def _parse_freeze_frame(value: Any, where: str) -> FreezeFrameEntry:
+    data = _require_mapping(value, where)
+    return FreezeFrameEntry(
+        parameter=_require_text(data.get("parameter"), where + ".parameter"),
+        dtc_code=_optional_text(data.get("dtc_code"), where + ".dtc_code"),
+        ecu=_optional_text(data.get("ecu"), where + ".ecu"),
+        value=_optional_text(data.get("value"), where + ".value"),
+        unit=_optional_text(data.get("unit"), where + ".unit"),
+        block_id=_optional_int(
+            data.get("block_id"), where + ".block_id", minimum=0
+        ),
+        confirmed=_optional_bool(
+            data.get("confirmed"), where + ".confirmed", default=False
         ),
         source=_optional_text(data.get("source"), where + ".source"),
     )
@@ -872,9 +1306,13 @@ __all__ = [
     "CatalogSource",
     "DatabaseSource",
     "DtcDescription",
+    "FreezeFrameEntry",
     "SCHEMA_NAME",
     "SCHEMA_VERSION",
+    "SUPPORTED_VERSIONS",
+    "ScriptEcu",
     "ScriptEntry",
+    "SymptomEntry",
     "TimingEntry",
     "VehicleProfile",
     "DiagnosticCatalog",
@@ -884,4 +1322,5 @@ __all__ = [
     "load_catalog",
     "normalize_dtc_code",
     "normalize_request_bytes",
+    "sanitize_text",
 ]
