@@ -11,7 +11,7 @@ the image.
 
 ## Target
 
-Paths are relative to `/mnt/vida` unless noted.
+Paths are relative to an image root, written `$IMG` below, unless noted.
 
 | Artifact | Size | SHA-256 | Role |
 | --- | --- | --- | --- |
@@ -43,6 +43,7 @@ Each VIDA document covers a different layer:
 | --- | --- | --- |
 | vehicle identity and content | `docs/vida-vehicle-profile.md` | profile tuple, wildcard resolution, profile-ID set, timing tables |
 | diagnostic client | `docs/vida-diagnostics-client.md` | script selection, vehicle resolution, ECU naming, client configuration |
+| DTC description and context | `docs/vida-dtc-readout.md` | text-id lookup, symptom records, counters, freeze frames, fault-trace documents |
 | adapter command space | `docs/dice-compatibility.md` | DiCE USB framing, command IDs, J2534 entry points |
 | scope | `README.md`, `docs/native-dice.md` | which VIDA workflows are mirrored and which are out of scope |
 
@@ -117,9 +118,11 @@ The VIDA work identifies two axes, neither of which is wired into `volvo_p3`
 yet:
 
 * The profile resolves to a set of profile IDs used by service information,
-  parts, symptoms, and diagnostic scripts. No evidence in the Java stack shows
-  those IDs selecting ECUs or changing bus traffic. `fkNodeECU` is loaded but has
-  no caller in the examined Java classes, so a profile-to-ECU link remains open.
+  parts, symptoms, and diagnostic scripts. The Java content stack does not turn
+  those IDs into an ECU list. The diagnostic client does reach the car with them,
+  but through a script whose `EcuAddress` and `ServiceId` fields carry the
+  addressing, not through a per-vehicle address table. `fkNodeECU` is loaded but
+  has no caller in the examined Java classes, so that specific link remains open.
 * `DiceTiming_Data.MDF` keys `P1max`, `P3min`, `P4min`, `Timeout` and `Resend`
   by ECU variant plus request bytes. This is a separate axis from the profile.
 
@@ -145,7 +148,7 @@ comes from the other VIDA notes and was not independently re-derived, and
 | The `FunctionLibrary` value is resolved by `VehCom2.DLL` | unverified | the literal was not among the assembly's 356 user strings |
 | No component in the image selects a J2534 device | unverified | targeted searches over a 12 GB image, not a complete inventory |
 | The timing key is ECU variant plus request bytes | documented | recovered from the MDF; only `DiceTimingLookup` and `EcuVariantId` were observed in the assembly |
-| Profile selection does not change the ECU list | documented | negative result from the Java stack; `fkNodeECU` remains unresolved |
+| Profile selection does not change the ECU list in the Java content stack | documented | negative result from the Java stack; the client instead selects a script carrying `EcuAddress`, and `fkNodeECU` stays unresolved |
 | The VIDA image holds no adapter command table | documented | targeted searches; absence is bounded by that coverage |
 
 ## Open questions
@@ -166,8 +169,8 @@ comes from the other VIDA notes and was not independently re-derived, and
 ## Reproducing
 
 ```sh
-VIDA=/mnt/vida/VIDA
-IMG=/mnt/vida
+VIDA=/path/to/image/VIDA
+IMG=/path/to/image
 D="$VIDA/jboss/standalone/deployments/VidaEar.ear/VidaWeb.war/Diagnostics"
 
 sha256sum "$VIDA/Vida.exe" "$D/VehCom2.DLL" \

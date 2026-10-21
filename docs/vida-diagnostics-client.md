@@ -200,6 +200,9 @@ Scripts are fetched from the database already zipped (`GetFromDb`,
 No `.xmlds` file exists anywhere in this tree, so every script here comes from
 the database.
 
+What happens after a script returns, including where the sentence beside a code
+comes from and what is attached as context, is in `docs/vida-dtc-readout.md`.
+
 ## How it reaches the bus
 
 `VehCom2.DLL` is the J2534 layer. Its strings show ISO15765 and ISO9141

@@ -53,6 +53,14 @@ proof that a module is absent or fault-free.
 
 The earlier reverse-engineering notes below are historical.
 
+Background material lives under `docs/`: the native path in
+[native-dice.md](docs/native-dice.md), the recovered adapter command space in
+[dice-compatibility.md](docs/dice-compatibility.md), and the VIDA reference notes
+in [vida-vehicle-profile.md](docs/vida-vehicle-profile.md),
+[vida-diagnostics-client.md](docs/vida-diagnostics-client.md),
+[vida-dtc-readout.md](docs/vida-dtc-readout.md), and
+[vida-image-boundary.md](docs/vida-image-boundary.md).
+
 ## Scope From VIDA Help
 
 `VIDA-Help-en-GB.pdf` confirms the diagnostic workflow we should mirror and
