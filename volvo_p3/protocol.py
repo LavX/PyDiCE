@@ -1,6 +1,6 @@
 """Volvo P3 diagnostic CAN frame helpers.
 
-The frame format here follows the VIDA reverse-engineering notes used by
+The frame format here follows the vendor reverse-engineering notes used by
 Volvo enthusiast tools:
 
 * Requests use extended CAN ID 0x000FFFFE.

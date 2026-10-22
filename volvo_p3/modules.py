@@ -1,6 +1,6 @@
 """Seed module addresses for Volvo P2/P3 diagnostic discovery.
 
-These are intentionally only hints. VIDA-derived data or discovery captures
+These are intentionally only hints. vendor-derived data or discovery captures
 from the target car should replace or extend this list.
 """
 

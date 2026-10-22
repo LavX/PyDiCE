@@ -5,6 +5,7 @@ from __future__ import annotations
 import curses
 import contextlib
 import io
+import json
 import os
 import shlex
 import sys
@@ -13,11 +14,14 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Mapping
 
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
     from volvo_p3.can_transport import CanBusConfig, PythonCanTransport
+    from volvo_p3.diagnostics import DiagnosticReport, build_report as build_diagnostic_report
+    from volvo_p3.diagnostics import fault_trace as build_fault_trace
+    from volvo_p3.diagnostics import network_status as compute_network_status
     from volvo_p3.dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
     from volvo_p3.modules import KNOWN_MODULES, parse_ecu
     from volvo_p3.protocol import (
@@ -30,8 +34,19 @@ if __package__ in (None, ""):
         is_response_to,
         parse_dtc_response,
     )
+    from volvo_p3.diag_catalog import CatalogError, DiagnosticCatalog, load_catalog
+    from volvo_p3.script_plan import (
+        DiagnosticScript,
+        DiagnosticScriptError,
+        classify_service,
+        parse_script_xml,
+        parse_script_zip,
+    )
 else:
     from .can_transport import CanBusConfig, PythonCanTransport
+    from .diagnostics import DiagnosticReport, build_report as build_diagnostic_report
+    from .diagnostics import fault_trace as build_fault_trace
+    from .diagnostics import network_status as compute_network_status
     from .dice_usb import find_dice_pyusb, find_dice_system_profiler, get_pyusb_backend_status
     from .modules import KNOWN_MODULES, parse_ecu
     from .protocol import (
@@ -43,6 +58,14 @@ else:
         hex_id,
         is_response_to,
         parse_dtc_response,
+    )
+    from .diag_catalog import CatalogError, DiagnosticCatalog, load_catalog
+    from .script_plan import (
+        DiagnosticScript,
+        DiagnosticScriptError,
+        classify_service,
+        parse_script_xml,
+        parse_script_zip,
     )
 
 
@@ -67,6 +90,15 @@ class SectionSpec:
     actions: tuple[ActionSpec, ...]
 
 
+@dataclass(frozen=True)
+class NativeScanResult:
+    """Outcome of one native CLI scan: the saved report and its log lines."""
+
+    report_path: Path
+    profile_path: Path | None = None
+    lines: tuple[str, ...] = ()
+
+
 @dataclass
 class VehicleState:
     vin: str = ""
@@ -85,6 +117,509 @@ def _optional_int(value: str | None) -> int | None:
 def _parse_ecu_list(text: str) -> list[int]:
     values = [piece.strip() for piece in text.split(",")]
     return [parse_ecu(piece) for piece in values if piece]
+
+
+# Diagnostic data views -------------------------------------------------------------
+
+DEFAULT_DIAG_CATALOG = "data/diag_catalog.json.xz"
+DEFAULT_DIAG_SCAN = "reports/my-car-complete.json"
+DEFAULT_LIVE_TIMEOUT = "1.5"
+
+
+def default_diag_catalog_path() -> str:
+    """Return the conventional catalog path, or blank when it is absent."""
+
+    return DEFAULT_DIAG_CATALOG if Path(DEFAULT_DIAG_CATALOG).is_file() else ""
+
+
+def default_diag_scan_path() -> str:
+    """Return the conventional saved scan path."""
+
+    return DEFAULT_DIAG_SCAN
+
+
+def default_live_diag_profile_path() -> str:
+    """Return the conventional saved profile path, or blank when it is absent."""
+
+    return DEFAULT_DIAG_SCAN if Path(DEFAULT_DIAG_SCAN).is_file() else ""
+
+
+def _timeout_text(value: str | float | None) -> str:
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("timeout must be a positive finite number") from None
+    if not 0 < timeout < float("inf"):
+        raise ValueError("timeout must be a positive finite number")
+    return str(timeout)
+
+
+def build_live_scan_options(
+    catalog_path: str | os.PathLike[str],
+    timeout: str | float | None = DEFAULT_LIVE_TIMEOUT,
+    profile_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Return the read-only ``dice-scan`` options for one live DTC read.
+
+    The catalog and the optional saved profile are checked before any scan
+    starts, so a missing file becomes an error line instead of a failed
+    adapter session. The profile is only read, never refreshed.
+    """
+
+    catalog_text = str(catalog_path).strip()
+    if not catalog_text:
+        raise ValueError("enter a service catalog JSON path")
+    catalog_file = Path(catalog_text)
+    if not catalog_file.is_file():
+        raise FileNotFoundError("catalog not found: {}".format(catalog_file))
+
+    options = [
+        "--timeout",
+        _timeout_text(timeout),
+        "--diag-catalog",
+        str(catalog_file),
+    ]
+
+    profile_text = str(profile_path).strip() if profile_path is not None else ""
+    if profile_text:
+        profile_file = Path(profile_text)
+        if not profile_file.is_file():
+            raise FileNotFoundError("profile not found: {}".format(profile_file))
+        options.extend(("--profile", str(profile_file)))
+    return options
+
+
+def diag_catalog_mapping(catalog: DiagnosticCatalog) -> dict[str, Any]:
+    """Flatten a loaded catalog into the mapping shape diagnostics accepts.
+
+    Only text the catalog actually carries is copied. A code whose entries
+    disagree is left out so no caller has to choose a description.
+    """
+
+    if not isinstance(catalog, DiagnosticCatalog):
+        raise TypeError("catalog must be a DiagnosticCatalog")
+
+    global_texts: dict[str, set[str]] = {}
+    module_texts: dict[str, dict[str, set[str]]] = {}
+    for entry in catalog.dtc_descriptions:
+        text = (entry.short_text or entry.long_text or "").strip()
+        if not text:
+            continue
+        if entry.ecu:
+            module_texts.setdefault(entry.ecu.strip().upper(), {}).setdefault(
+                entry.code, set()
+            ).add(text)
+        else:
+            global_texts.setdefault(entry.code, set()).add(text)
+
+    mapping: dict[str, Any] = {}
+    for code, texts in global_texts.items():
+        if len(texts) == 1:
+            mapping[code] = {"description": next(iter(texts))}
+
+    modules: dict[str, Any] = {}
+    for ecu, codes in module_texts.items():
+        scoped: dict[str, Any] = {}
+        for code, texts in codes.items():
+            if len(texts) == 1:
+                scoped[code] = {"description": next(iter(texts))}
+        if scoped:
+            modules[ecu] = scoped
+    if modules:
+        mapping["modules"] = modules
+    return mapping
+
+
+def build_diag_report(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> DiagnosticReport:
+    """Load a saved scan, optionally merge a catalog, and build the view data.
+
+    Missing files raise ``FileNotFoundError`` and malformed input raises
+    ``ValueError`` (``CatalogError`` included). The TUI renders those as an
+    error line; callers that want that behaviour should use one of the
+    ``diag_*_lines`` wrappers below.
+    """
+
+    report_text = str(scan_path).strip()
+    if not report_text:
+        raise FileNotFoundError("enter a scan report JSON path")
+    report_path = Path(report_text)
+    if not report_path.is_file():
+        raise FileNotFoundError("scan report not found: {}".format(report_path))
+
+    try:
+        with report_path.open(encoding="utf-8") as handle:
+            scan = json.load(handle)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "scan report is not valid JSON: {} (line {}, column {})".format(
+                report_path, exc.lineno, exc.colno
+            )
+        ) from exc
+    if not isinstance(scan, dict):
+        raise ValueError(
+            "scan report root must be a JSON object: {}".format(report_path)
+        )
+
+    catalog_mapping: Mapping[str, Any] | None = None
+    catalog_text = str(catalog_path).strip() if catalog_path is not None else ""
+    if catalog_text:
+        catalog_file = Path(catalog_text)
+        if not catalog_file.is_file():
+            raise FileNotFoundError("catalog not found: {}".format(catalog_file))
+        catalog_mapping = diag_catalog_mapping(load_catalog(catalog_file))
+
+    return build_diagnostic_report(scan, catalog=catalog_mapping, vehicle=vehicle)
+
+
+def _diag_hex(value: int | None, width: int = 2) -> str:
+    if value is None:
+        return "-"
+    return "0x{:0{}X}".format(value, width)
+
+
+def _diag_dtc_line(dtc: Any) -> str:
+    line = "  {}  {}".format(dtc.code or "(no code)", dtc.classification)
+    if dtc.description:
+        line += "  " + dtc.description
+    return line
+
+
+def _diag_report_title(report: DiagnosticReport) -> str:
+    return report.name or "saved scan"
+
+
+def format_diag_dtc_lines(report: DiagnosticReport) -> list[str]:
+    """Format the module and DTC overview for one report."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    lines = ["Diagnostic DTC overview: {}".format(_diag_report_title(report))]
+    vin = report.vehicle.get("vin") if isinstance(report.vehicle, Mapping) else None
+    if isinstance(vin, str) and vin.strip():
+        lines.append("vin: {}".format(vin.strip().upper()))
+    lines.append(
+        "modules: {} | DTC records: {} | described: {} | current faults: {}".format(
+            report.module_count,
+            report.dtc_count,
+            report.described_dtc_count,
+            report.current_fault_count,
+        )
+    )
+    if not report.modules:
+        lines.append("no modules in this report")
+        return lines
+
+    for module in report.modules:
+        lines.append(
+            "{}  request={}  response={}  status={}  dtcs={}".format(
+                module.name or "(unnamed)",
+                _diag_hex(module.request_id, 3),
+                _diag_hex(module.response_id, 3),
+                module.status or "unknown",
+                module.dtc_count,
+            )
+        )
+        lines.extend(_diag_dtc_line(dtc) for dtc in module.dtcs)
+    return lines
+
+
+def format_diag_network_lines(report: DiagnosticReport) -> list[str]:
+    """Format the responder summary for one report."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    network = compute_network_status(report)
+    lines = [
+        "Diagnostic network status: {}".format(_diag_report_title(report)),
+        "total modules: {}".format(network.total_modules),
+        "responders: {} ({:.0%})".format(
+            network.responder_count, network.coverage_ratio
+        ),
+        "no response: {}".format(", ".join(network.no_response) or "(none)"),
+        "incomplete: {}".format(", ".join(network.incomplete) or "(none)"),
+        "negative response: {}".format(
+            ", ".join(network.negative_response) or "(none)"
+        ),
+        "unclassified: {}".format(", ".join(network.other) or "(none)"),
+        "coverage: {}".format(network.coverage_note),
+    ]
+    return lines
+
+
+def format_diag_fault_lines(report: DiagnosticReport) -> list[str]:
+    """Format DTCs grouped by module and fault state."""
+
+    groups = build_fault_trace(report)
+    lines = [
+        "Diagnostic fault trace: {}".format(_diag_report_title(report)),
+        "current faults: {} | groups: {}".format(
+            report.current_fault_count, len(groups)
+        ),
+    ]
+    if not groups:
+        lines.append("no DTC records in this report")
+        return lines
+
+    for group in groups:
+        lines.append(
+            "{}  {}  ({})".format(
+                group.module or "(unnamed)", group.status, group.count
+            )
+        )
+        lines.extend(_diag_dtc_line(dtc) for dtc in group.dtcs)
+    return lines
+
+
+def _safe_diag_report_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None,
+    vehicle: Mapping[str, Any] | None,
+    formatter: Callable[[DiagnosticReport], list[str]],
+) -> list[str]:
+    try:
+        report = build_diag_report(scan_path, catalog_path, vehicle)
+    except (OSError, ValueError, TypeError) as exc:
+        return ["error: {}".format(exc)]
+    return formatter(report)
+
+
+def diag_dtc_overview_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return DTC overview lines, with a single error line on bad input."""
+
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_dtc_lines
+    )
+
+
+def diag_network_status_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return network status lines, with a single error line on bad input."""
+
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_network_lines
+    )
+
+
+def diag_fault_trace_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Return fault trace lines, with a single error line on bad input."""
+
+    return _safe_diag_report_lines(
+        scan_path, catalog_path, vehicle, format_diag_fault_lines
+    )
+
+
+def format_live_diag_lines(
+    report: DiagnosticReport,
+    *,
+    report_path: str | os.PathLike[str] | None = None,
+    catalog_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Format one live read as counts, fault trace, and network status."""
+
+    if not isinstance(report, DiagnosticReport):
+        raise TypeError("report must be a DiagnosticReport")
+
+    lines = ["Live DTC read: {}".format(_diag_report_title(report))]
+    if report_path is not None and str(report_path).strip():
+        lines.append("saved report: {}".format(report_path))
+    if catalog_path is not None and str(catalog_path).strip():
+        lines.append("catalog: {}".format(catalog_path))
+    if report.scan_status:
+        lines.append("scan status: {}".format(report.scan_status))
+    lines.append("")
+    lines.extend(format_diag_dtc_lines(report))
+    lines.append("")
+    lines.extend(format_diag_fault_lines(report))
+    lines.append("")
+    lines.extend(format_diag_network_lines(report))
+    return lines
+
+
+def build_live_diag_lines(
+    scan_path: str | os.PathLike[str],
+    catalog_path: str | os.PathLike[str] | None = None,
+    vehicle: Mapping[str, Any] | None = None,
+    *,
+    report_path: str | os.PathLike[str] | None = None,
+) -> list[str]:
+    """Load a just-saved scan and format it, or return a single error line."""
+
+    try:
+        report = build_diag_report(scan_path, catalog_path, vehicle)
+    except (OSError, ValueError, TypeError) as exc:
+        return ["error: {}".format(exc)]
+    return format_live_diag_lines(
+        report,
+        report_path=report_path if report_path is not None else scan_path,
+        catalog_path=catalog_path,
+    )
+
+
+def build_diag_catalog_view(path: str | os.PathLike[str]) -> list[str]:
+    """Load a catalog and describe its sections, or return an error line."""
+
+    text = str(path).strip()
+    if not text:
+        return ["error: enter a service catalog JSON path"]
+    catalog_path = Path(text)
+    if not catalog_path.is_file():
+        return ["error: catalog not found: {}".format(catalog_path)]
+    try:
+        catalog = load_catalog(catalog_path)
+    except (OSError, CatalogError) as exc:
+        return ["error: {}".format(exc)]
+
+    source = catalog.source
+    lines = [
+        "catalog: {}".format(catalog_path),
+        "source: {}".format(source.kind),
+    ]
+    if source.generated_at:
+        lines.append("generated: {}".format(source.generated_at))
+    if source.image:
+        lines.append("image: {}".format(source.image))
+    if source.language:
+        lines.append("language: {}".format(source.language))
+    lines.append(
+        "dtc descriptions: {} ({} codes)".format(
+            len(catalog.dtc_descriptions),
+            len({entry.code for entry in catalog.dtc_descriptions}),
+        )
+    )
+    lines.append("timing entries: {}".format(len(catalog.timing)))
+    lines.append("profiles: {}".format(len(catalog.profiles)))
+    lines.append("scripts: {}".format(len(catalog.scripts)))
+    return lines
+
+
+def _parse_script_plan(data: bytes, suffix: str) -> DiagnosticScript:
+    if suffix == ".zip" or data.startswith(b"PK\x03\x04"):
+        return parse_script_zip(data)
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16")
+    else:
+        text = data.decode("utf-8-sig")
+    return parse_script_xml(text)
+
+
+def _format_script_plan(script: DiagnosticScript, path: Path) -> list[str]:
+    lines = [
+        "script: {}".format(path),
+        "docno: {}".format(script.docno or "(none)"),
+        "title: {}".format(script.title or "(none)"),
+        "type: {}".format(script.script_type or "(none)"),
+    ]
+    if script.variant_id:
+        lines.append("variant: {}".format(script.variant_id))
+    if script.language:
+        lines.append("language: {}".format(script.language))
+    if script.profile_ids:
+        lines.append("profiles: {}".format(", ".join(script.profile_ids)))
+
+    lines.append("ECUs: {}".format(len(script.ecus)))
+    for plan in script.ecus:
+        services = ", ".join(
+            "0x{:02X}({})".format(service_id, classify_service(service_id))
+            for service_id in plan.service_ids
+        ) or "(none)"
+        lines.append(
+            "  ecu={} type={} tester={} mode={} services={}".format(
+                _diag_hex(plan.ecu_address),
+                _diag_hex(plan.ecu_type, 1),
+                _diag_hex(plan.tester_address),
+                plan.mode or "-",
+                services,
+            )
+        )
+
+    requests = script.read_only_requests()
+    lines.append(
+        "read-only plan: {} request{}".format(
+            len(requests), "" if len(requests) == 1 else "s"
+        )
+    )
+    for request in requests:
+        lines.append(
+            "  ecu={} service=0x{:02X} {} request={}".format(
+                _diag_hex(request.ecu_address),
+                request.service_id,
+                request.service_name,
+                request.request or "-",
+            )
+        )
+
+    dropped = sorted(
+        {
+            service_id
+            for plan in script.ecus
+            for service_id in plan.service_ids
+            if classify_service(service_id) != "read_only"
+        }
+    )
+    if dropped:
+        lines.append(
+            "dropped services: {}".format(
+                ", ".join(
+                    "0x{:02X}({})".format(service_id, classify_service(service_id))
+                    for service_id in dropped
+                )
+            )
+        )
+
+    dtc_plan = script.dtc_list
+    if dtc_plan is None:
+        lines.append("DTC list: (none)")
+    else:
+        parts = []
+        if dtc_plan.list_path:
+            parts.append("list={}".format(dtc_plan.list_path))
+        if dtc_plan.value_path:
+            parts.append("value={}".format(dtc_plan.value_path))
+        if dtc_plan.text_path:
+            parts.append("text={}".format(dtc_plan.text_path))
+        lines.append("DTC list: {}".format(" ".join(parts) or "(none)"))
+
+    lines.append("plan only: nothing was sent to a vehicle")
+    return lines
+
+
+def build_script_plan_view(path: str | os.PathLike[str]) -> list[str]:
+    """Parse a diagnostic script ZIP or XML into a plan, or return an error line."""
+
+    text = str(path).strip()
+    if not text:
+        return ["error: enter a diagnostic script ZIP or XML path"]
+    script_path = Path(text)
+    if not script_path.is_file():
+        return ["error: script not found: {}".format(script_path)]
+    try:
+        data = script_path.read_bytes()
+    except OSError as exc:
+        return ["error: cannot read script {}: {}".format(script_path, exc)]
+
+    try:
+        script = _parse_script_plan(data, script_path.suffix.lower())
+    except (OSError, ValueError, UnicodeDecodeError, DiagnosticScriptError) as exc:
+        return ["error: {}".format(exc)]
+
+    return _format_script_plan(script, script_path)
 
 
 class VolvoTuiApp:
@@ -228,6 +763,57 @@ class VolvoTuiApp:
                     ),
                 ),
             ),
+            SectionSpec(
+                "Service Data",
+                (
+                    ActionSpec(
+                        "Load Catalog",
+                        "Load and validate a service catalog JSON export.",
+                        self._diag_load_catalog,
+                        (FieldSpec("diag_catalog", "Catalog JSON", default_diag_catalog_path()),),
+                    ),
+                    ActionSpec(
+                        "Live DTC Read",
+                        "Run one read-only scan with the service catalog and show DTC counts, fault trace, and network status.",
+                        self._diag_live_read,
+                        (
+                            FieldSpec("live_catalog", "Catalog JSON", default_diag_catalog_path()),
+                            FieldSpec("live_timeout", "Timeout per module in seconds", DEFAULT_LIVE_TIMEOUT),
+                            FieldSpec("live_profile", "Saved profile JSON (optional)", default_live_diag_profile_path()),
+                        ),
+                    ),
+                    ActionSpec(
+                        "DTC Overview",
+                        "List modules and DTCs from a saved scan report, with catalog descriptions when present.",
+                        self._diag_dtc_overview,
+                        (
+                            FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),
+                            FieldSpec("diag_catalog", "Catalog JSON (optional)", default_diag_catalog_path()),
+                        ),
+                    ),
+                    ActionSpec(
+                        "Fault Trace",
+                        "Group saved DTCs by module and fault state.",
+                        self._diag_fault_trace,
+                        (
+                            FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),
+                            FieldSpec("diag_catalog", "Catalog JSON (optional)", default_diag_catalog_path()),
+                        ),
+                    ),
+                    ActionSpec(
+                        "Network Status",
+                        "Summarize responders, silence, and partial responses in a saved scan.",
+                        self._diag_network_status,
+                        (FieldSpec("diag_scan", "Scan report JSON", default_diag_scan_path()),),
+                    ),
+                    ActionSpec(
+                        "Script Plan",
+                        "Parse a diagnostic script ZIP or XML into a read-only plan.",
+                        self._script_plan_plan,
+                        (FieldSpec("script_plan", "Script ZIP or XML", ""),),
+                    ),
+                ),
+            ),
         ]
 
     @property
@@ -313,7 +899,7 @@ class VolvoTuiApp:
             )
         )
 
-    def _run_native_scan(self, options: list[str], *, profile_path: Path | None = None) -> list[str]:
+    def _run_native_scan_result(self, options: list[str], *, profile_path: Path | None = None) -> NativeScanResult:
         # Import only when selected: the CLI also imports this module for its TUI command.
         if __package__ in (None, ""):
             from volvo_p3.cli import main as cli_main
@@ -366,19 +952,20 @@ class VolvoTuiApp:
 
         if exit_code:
             raise RuntimeError(f"native DiCE scan exited with code {exit_code}")
-        lines = []
-        lines.append(f"Saved scan: {output}")
+        lines = [f"Saved scan: {output}"]
         if profile_path is not None and profile_path.exists():
             lines.append(f"Saved module profile: {profile_path}")
             self._last_values["native_profile"] = str(profile_path)
-        return lines
+        return NativeScanResult(output, profile_path, tuple(lines))
+
+    def _run_native_scan(self, options: list[str], *, profile_path: Path | None = None) -> list[str]:
+        """Run one native scan and return only its log lines."""
+
+        return list(self._run_native_scan_result(options, profile_path=profile_path).lines)
 
     @staticmethod
     def _native_timeout(values: dict[str, str]) -> str:
-        timeout = float(values["native_timeout"])
-        if not 0 < timeout < float("inf"):
-            raise ValueError("timeout must be a positive finite number")
-        return str(timeout)
+        return _timeout_text(values["native_timeout"])
 
     def _native_known_scan(self, values: dict[str, str]) -> list[str]:
         return self._run_native_scan(["--timeout", self._native_timeout(values)])
@@ -643,6 +1230,62 @@ class VolvoTuiApp:
             return lines
         finally:
             bus.close()
+
+    def _diag_vehicle(self) -> dict[str, str] | None:
+        return {"vin": self.vehicle.vin} if self.vehicle.vin else None
+
+    def _diag_load_catalog(self, values: dict[str, str]) -> list[str]:
+        return build_diag_catalog_view(values.get("diag_catalog", ""))
+
+    def _diag_live_read(self, values: dict[str, str]) -> list[str]:
+        catalog = values.get("live_catalog", "")
+        try:
+            options = build_live_scan_options(
+                catalog,
+                values.get("live_timeout", DEFAULT_LIVE_TIMEOUT),
+                values.get("live_profile", ""),
+            )
+        except (OSError, ValueError) as exc:
+            return ["error: {}".format(exc)]
+
+        try:
+            result = self._run_native_scan_result(options)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ["error: live DTC read failed: {}".format(exc)]
+
+        lines = list(result.lines)
+        lines.extend(
+            build_live_diag_lines(
+                result.report_path,
+                catalog,
+                self._diag_vehicle(),
+                report_path=result.report_path,
+            )
+        )
+        return lines
+
+    def _diag_dtc_overview(self, values: dict[str, str]) -> list[str]:
+        return diag_dtc_overview_lines(
+            values.get("diag_scan", ""),
+            values.get("diag_catalog", ""),
+            self._diag_vehicle(),
+        )
+
+    def _diag_fault_trace(self, values: dict[str, str]) -> list[str]:
+        return diag_fault_trace_lines(
+            values.get("diag_scan", ""),
+            values.get("diag_catalog", ""),
+            self._diag_vehicle(),
+        )
+
+    def _diag_network_status(self, values: dict[str, str]) -> list[str]:
+        return diag_network_status_lines(
+            values.get("diag_scan", ""),
+            vehicle=self._diag_vehicle(),
+        )
+
+    def _script_plan_plan(self, values: dict[str, str]) -> list[str]:
+        return build_script_plan_view(values.get("script_plan", ""))
 
     def _draw(self, stdscr: curses.window) -> None:
         stdscr.erase()

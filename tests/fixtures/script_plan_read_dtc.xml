@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<script xmlns:nevis="http://www.volvocars.com/namespaces/processing"
+        docno="VCC-227144" VariantId="227144" type="ReadDTCs" xml:lang="en-US"
+        nevis:profile="urn:x-nevis:profile:0b00c8af80206a61 urn:x-nevis:profile:0b00c8af80206a68">
+  <title>Read DTCs</title>
+  <content>
+    <nodes>
+      <node class="Components.VehComm" nodeid="AE01_ECM">
+        <property class="String" name="Mode" type="Internal" value="EcuAddress" />
+        <property class="Int" name="EcuAddress" type="In" value="17" />
+        <property class="Int" name="TesterAddress" type="In" value="0xF1" />
+        <property class="Int" name="ServiceId" type="In" value="19" />
+        <property class="Int" name="ServiceId" type="In" value="22" />
+        <property class="String" name="Request" type="In" value="19 02 FF" />
+        <property class="String" name="Request" type="In" value="22 F1 90" />
+        <property class="Response" name="Result" type="Out" value="" />
+        <property class="String" name="DtcList" type="Out" value="DtcList" />
+      </node>
+      <node class="Components.VehComm" nodeid="AE05_DIM">
+        <property class="String" name="Mode" type="Internal" value="EcuType" />
+        <property class="Int" name="EcuType" type="In" value="381101" />
+        <property class="Int" name="ServiceId" type="In" value="19" />
+        <property class="String" name="Request" type="In" value="19 02 FF" />
+      </node>
+      <node class="Components.ListIterator" nodeid="DtcList">
+        <property class="String" name="List" type="In" value="DtcList" />
+        <property class="String" name="Value" type="Out" value="Dtc.value" />
+        <property class="String" name="Text" type="Out" value="Dtc.text" />
+      </node>
+    </nodes>
+    <handlers>
+      <propertyhandler name="Value" node="Dtc">
+        <set node="Dtc" property="value" />
+        <set node="Dtc" property="text" />
+      </propertyhandler>
+    </handlers>
+  </content>
+</script>

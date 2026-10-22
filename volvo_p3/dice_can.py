@@ -12,7 +12,7 @@ from .dice_rpc import DiceProtocolError, DiceRpc
 from .protocol import VolvoFrame
 
 
-# Candidate P3 V60 D6 diagnostic request IDs reported from VIDA.
+# Candidate P3 V60 D6 diagnostic request IDs reported from the source data.
 # Source: https://www.elektroda.com/rtvforum/topic3626792.html#18318959
 # Module labels must be distinguished from live identity verification.
 P3_D6_MODULES = {
@@ -25,9 +25,10 @@ P3_D6_MODULES = {
 class DiceCanTransport:
     """Own one standard-ID, 500 kbit/s CAN channel and its receive filter."""
 
-    def __init__(self, rpc: DiceRpc, *, uds_requests=()):
+    def __init__(self, rpc: DiceRpc, *, uds_requests=(), allow_read_services=False):
         self.rpc = rpc
         self.uds_requests = frozenset(uds_requests)
+        self.allow_read_services = bool(allow_read_services)
         if any(type(identifier) is not int or not 0x700 <= identifier <= 0x7F7 or identifier == 0x7DF
                for identifier in self.uds_requests):
             raise ValueError("UDS requests require diagnostic IDs 0x700..0x7F7, excluding functional 0x7DF")
@@ -149,7 +150,13 @@ class DiceCanTransport:
             frame.arbitration_id in self.uds_requests
             and data == bytes.fromhex('03 19 02 FF 00 00 00 00')
         )
-        if not (is_discovery or is_dtc_read or is_flow_control or is_uds_read):
+        is_diag_read = (
+            self.allow_read_services
+            and frame.arbitration_id in self.uds_requests
+            and (data[0] & 0xF0) == 0
+            and data[1] in (0x01, 0x09, 0x19, 0x22)
+        )
+        if not (is_discovery or is_dtc_read or is_flow_control or is_uds_read or is_diag_read):
             raise ValueError('DiCE transmit is limited to OBD read requests and flow control')
         if timeout <= 0:
             raise ValueError('timeout must be positive')

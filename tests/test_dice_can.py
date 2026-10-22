@@ -196,6 +196,41 @@ class DiceCanSendTests(unittest.TestCase):
         with self.assertRaisesRegex(DiceProtocolError, "transmit failed"):
             transport.send(request)
 
+    def test_diag_read_services_are_opt_in(self):
+        request = VolvoFrame(
+            0x7E0, bytes.fromhex("03 22 F1 90 00 00 00 00"), False
+        )
+
+        default_rpc = FakeRpc(read_packets=[tx_ack()])
+        default = DiceCanTransport(default_rpc, uds_requests=[0x7E0])
+        default.channel_id = 1
+        default.started = True
+        with self.assertRaises(ValueError):
+            default.send(request)
+
+        diag_rpc = FakeRpc(read_packets=[tx_ack()])
+        diag = DiceCanTransport(
+            diag_rpc, uds_requests=[0x7E0], allow_read_services=True
+        )
+        diag.channel_id = 1
+        diag.started = True
+        diag.send(request)
+
+    def test_diag_read_flag_rejects_write_services(self):
+        transport = DiceCanTransport(
+            FakeRpc(read_packets=[tx_ack()]),
+            uds_requests=[0x7E0],
+            allow_read_services=True,
+        )
+        transport.channel_id = 1
+        transport.started = True
+        request = VolvoFrame(
+            0x7E0, bytes.fromhex("03 2E F1 90 00 00 00 00"), False
+        )
+
+        with self.assertRaises(ValueError):
+            transport.send(request)
+
 
 class DiceCanReceiveTests(unittest.TestCase):
     def make_open_transport(self, *events):
