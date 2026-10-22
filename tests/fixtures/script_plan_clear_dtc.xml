@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ServiceId is a decimal CarCom catalog key (T111_Service.id), not the
+     raw UDS byte written in Request. 5/6/13/14 are confirmed
+     "erase_dtc_no_view" and 41/63 are the other real values this script
+     carries per docs/vida-second-pass.md; 1 is a confirmed read
+     (read_dtc_status), substituted for this fixture's one read slot so the
+     safety-filter test below still has a positive case. See
+     volvo_p3/script_plan.py's module docstring. -->
 <script xmlns:nevis="http://www.volvocars.com/namespaces/processing"
         docno="VCC-241986" VariantId="241986" type="ClearDtc" xml:lang="nl-NL"
         nevis:profile="urn:x-nevis:profile:0b00c8af8020bcb4">
@@ -8,13 +15,13 @@
       <node class="Components.VehComm" nodeid="AE01_ECM">
         <property class="String" name="Mode" type="Internal" value="EcuAddress" />
         <property class="Int" name="EcuAddress" type="In" value="17" />
-        <property class="Int" name="ServiceId" type="In" value="10" />
-        <property class="Int" name="ServiceId" type="In" value="27" />
+        <property class="Int" name="ServiceId" type="In" value="5" />
+        <property class="Int" name="ServiceId" type="In" value="6" />
+        <property class="Int" name="ServiceId" type="In" value="13" />
         <property class="Int" name="ServiceId" type="In" value="14" />
-        <property class="Int" name="ServiceId" type="In" value="3E" />
-        <property class="Int" name="ServiceId" type="In" value="2E" />
-        <property class="Int" name="ServiceId" type="In" value="31" />
-        <property class="Int" name="ServiceId" type="In" value="19" />
+        <property class="Int" name="ServiceId" type="In" value="41" />
+        <property class="Int" name="ServiceId" type="In" value="63" />
+        <property class="Int" name="ServiceId" type="In" value="1" />
         <property class="String" name="Request" type="In" value="10 03" />
         <property class="String" name="Request" type="In" value="27 01" />
         <property class="String" name="Request" type="In" value="14 FF FF" />

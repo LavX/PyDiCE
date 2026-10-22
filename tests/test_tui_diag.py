@@ -317,16 +317,16 @@ class DiagnosticScriptTests(unittest.TestCase):
         self.assertIn("ECUs: 2", lines)
         self.assertIn(
             "  ecu=0x11 type=- tester=0xF1 mode=EcuAddress "
-            "services=0x19(read_only), 0x22(read_only)",
+            "services=1(read_only), 2(read_only)",
             lines,
         )
         self.assertIn("read-only plan: 3 requests", lines)
         self.assertIn(
-            "  ecu=0x11 service=0x19 read_dtc_information request=19 02 FF",
+            "  ecu=0x11 service=1 read_dtc_status request=19 02 FF",
             lines,
         )
         self.assertIn(
-            "  ecu=0x11 service=0x22 read_data_by_identifier request=22 F1 90",
+            "  ecu=0x11 service=2 read_ecu_identification request=22 F1 90",
             lines,
         )
         self.assertIn("DTC list: list=DtcList value=Dtc.value text=Dtc.text", lines)
@@ -350,13 +350,13 @@ class DiagnosticScriptTests(unittest.TestCase):
         self.assertIn("type: ClearDtc", lines)
         dropped = [line for line in lines if line.startswith("dropped services:")]
         self.assertEqual(len(dropped), 1)
-        self.assertIn("0x14(clear_diagnostic_information)", dropped[0])
-        self.assertIn("0x27(security_access)", dropped[0])
+        self.assertIn("14(erase_dtc_no_view)", dropped[0])
+        self.assertIn("41(unknown)", dropped[0])
 
         planned = [line for line in lines if " request=" in line]
         self.assertEqual(len(planned), 1)
-        self.assertIn("service=0x19", planned[0])
-        self.assertNotIn("service=0x14", planned[0])
+        self.assertIn("service=1 ", planned[0])
+        self.assertNotIn("service=14 ", planned[0])
 
     def test_script_plan_handles_missing_and_malformed_paths(self):
         missing = build_script_plan_view(MISSING)
@@ -391,10 +391,10 @@ class ScriptRunTests(unittest.TestCase):
         self.assertIn("  matched ecu_name ECM -> 0x7E0", lines)
         self.assertIn("  matched ecu_identifier DIM -> 0x720", lines)
         self.assertTrue(
-            any("-> 0x7E0" in line and "service 0x19" in line for line in lines)
+            any("-> 0x7E0" in line and "service 1 " in line for line in lines)
         )
         self.assertTrue(
-            any("-> 0x720" in line and "service 0x22" in line for line in lines)
+            any("-> 0x720" in line and "service 2 " in line for line in lines)
         )
         self.assertIn("unmapped: 2", lines)
         self.assertTrue(any("ecu_address 0x29" in line for line in lines))

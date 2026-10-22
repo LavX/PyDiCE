@@ -415,9 +415,9 @@ def test_script_json_reports_plan_and_never_executes(capsys):
     assert payload["dtc_plan"]["value_path"] == "Dtc.value"
     assert payload["dtc_plan"]["text_path"] == "Dtc.text"
     assert [request["service_id"] for request in payload["read_only_requests"]] == [
-        0x19,
-        0x22,
-        0x19,
+        1,
+        2,
+        1,
     ]
     assert payload["blocked_services"] == []
     assert payload["executed"] is False
@@ -444,17 +444,17 @@ def test_script_safety_filter_drops_write_services(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert status == 0
     assert [request["service_id"] for request in payload["read_only_requests"]] == [
-        0x19
+        1
     ]
-    assert payload["read_only_requests"][0]["service_name"] == "read_dtc_information"
+    assert payload["read_only_requests"][0]["service_name"] == "read_dtc_status"
     assert payload["read_only_requests"][0]["request"] == "19 02 FF"
     assert {item["service_id"] for item in payload["blocked_services"]} == {
-        0x10,
-        0x14,
-        0x27,
-        0x2E,
-        0x31,
-        0x3E,
+        5,
+        6,
+        13,
+        14,
+        41,
+        63,
     }
     assert payload["executed"] is False
 
@@ -466,8 +466,8 @@ def test_script_human_marks_blocked_services(capsys):
     assert status == 0
     assert "Read-only requests (1):" in out
     assert "Blocked services (6, never executed):" in out
-    assert "0x14 clear_diagnostic_information" in out
-    assert "0x27 security_access" in out
+    assert "14 erase_dtc_no_view" in out
+    assert "41 unknown" in out
 
 
 def test_script_accepts_zip_archive(tmp_path, capsys):

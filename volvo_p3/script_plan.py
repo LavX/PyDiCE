@@ -10,8 +10,36 @@ here. Parsing never executes a script and never talks to a car.
 ``read_only_requests`` is the only method that produces request data, and it
 drops every service that is not a known read.
 
-Service ids inside a script are written as hexadecimal bytes without a prefix:
-a ClearDtc script carries ``14``, a ReadDTCs script carries ``19`` and ``22``.
+A VehComm node's ``ServiceId`` property is a decimal CarCom catalog key
+(``T111_Service.id``), not a raw UDS service byte. This was confirmed by
+decompiling ``BizServices.CarCom.VehicleServices.DLL``'s
+``service_GetService`` stored-procedure call (see
+``docs/vida-service-templates.md``), and independently by the recovered
+script corpus: 4,025 of 4,029 real ``ServiceId`` values are plain decimal
+digit strings (the remaining 4 are single-character text corruption of a
+digit string, not hex letters), and the common values (106, 112, 101, 114,
+119, ...) exceed the 0-255 range a raw byte would allow. An earlier pass's
+claim that these values are "hexadecimal without a prefix" does not hold up
+against the corpus and is corrected here; a hand-written test fixture using
+hex-letter values such as ``3E``/``2E`` for this property was synthetic, not
+drawn from the corpus.
+
+A *literal* ``Request``/``Response`` field, when a script's body happens to
+carry one, is a different thing: a raw wire byte string (first byte is the
+actual UDS service byte), parsed by ``_request_bytes`` and classified with
+``classify_service``/``is_read_only_service``/``READ_ONLY_SERVICES`` below.
+No script in the committed corpus carries one (`data/diag_dump.tar.xz`
+checked directly: 0 of 4,169 VehComm nodes), so this path has no live
+coverage today, but it is kept because a differently-recovered script could
+have one.
+
+The ``ServiceId`` *property* value (the catalog key) is classified
+separately, by ``volvo_p3.vida_service_templates.classify_catalog_service``/
+``is_read_only_catalog_service``/``READ_ONLY_CATALOG_SERVICES``, which
+``_parse_catalog_service_id`` below feeds. Do not use the raw-byte functions
+on a catalog key, or vice versa; they classify different number spaces that
+happen to share small values by coincidence.
+
 ``EcuAddress``, ``EcuType`` and ``TesterAddress`` are identifiers, so they are
 read as decimal unless written with a ``0x`` prefix.
 """
@@ -25,6 +53,8 @@ import zlib
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 from xml.etree import ElementTree
+
+from .vida_service_templates import INFERRED_SERVICE_ROLES, is_read_only_catalog_service
 
 
 MAX_SCRIPT_BYTES = 8 * 1024 * 1024
@@ -116,8 +146,10 @@ class DtcPlan:
 class ReadRequest:
     """A request that survived the read-only filter.
 
-    ``request`` is None when the script carried no request bytes, or when the
-    bytes could not be shown to belong to a read service.
+    ``service_id`` is a decimal CarCom catalog key, not a raw UDS byte; see
+    the module docstring. ``request`` is None when the script carried no
+    request bytes, or when the bytes could not be shown to belong to a read
+    service.
     """
 
     ecu_address: Optional[int]
@@ -130,7 +162,13 @@ class ReadRequest:
 
     @property
     def service_name(self) -> str:
-        return READ_SERVICE_NAMES.get(self.service_id, "unknown")
+        """A human-readable label for ``service_id`` (a catalog key).
+
+        From ``vida_service_templates.INFERRED_SERVICE_ROLES``, a working
+        hypothesis, so this name is advisory, not confirmed.
+        """
+
+        return INFERRED_SERVICE_ROLES.get(self.service_id, "unknown")
 
 
 @dataclass(frozen=True)
@@ -151,19 +189,33 @@ class DiagnosticScript:
         """Return requests for known read services only.
 
         Writes, clears, security access, session changes, resets, keepalives
-        and unknown services are dropped, as are request byte strings whose
-        leading service byte disagrees with the node or is not a read.
+        and unknown catalog services are dropped, as is a literal request
+        byte string whose own leading byte is not a known read service.
+
+        A catalog ``ServiceId`` and a literal ``Request`` byte string are
+        different number spaces (see the module docstring), so there is no
+        way to verify a specific pairing between them. With exactly one
+        ``ServiceId`` on a node, every safe literal request is paired with
+        it (one operation, one or more request variants). With more than
+        one, each is paired positionally with the request at the same
+        index, since that is the only correspondence a script's own
+        document order offers; a missing or unsafe request at that
+        position falls back to ``None`` rather than guessing.
         """
 
         result: List[ReadRequest] = []
         for plan in self.ecus:
-            for service_id in plan.service_ids:
-                if not is_read_only_service(service_id):
+            safe_values = _safe_request_values(plan)
+            service_ids = plan.service_ids
+            for position, service_id in enumerate(service_ids):
+                if not is_read_only_catalog_service(service_id):
                     continue
-                values = _safe_request_values(plan, service_id)
-                if not values:
-                    values = (None,)
-                for value in values:
+                if len(service_ids) == 1:
+                    candidates = [value for value in safe_values if value is not None]
+                else:
+                    candidate = safe_values[position] if position < len(safe_values) else None
+                    candidates = [candidate] if candidate is not None else []
+                for value in candidates or (None,):
                     result.append(
                         ReadRequest(
                             ecu_address=plan.ecu_address,
@@ -375,14 +427,29 @@ def _parse_identifier(value: Optional[str]) -> Optional[int]:
         return None
 
 
-def _parse_service_id(value: str) -> Optional[int]:
-    text = value.strip().lower()
-    if text.startswith("0x"):
-        text = text[2:]
-    if not text or any(char not in "0123456789abcdef" for char in text):
+#: A sanity bound on a parsed CarCom ServiceId catalog key, not a protocol
+#: limit. The largest confirmed-real value seen in the recovered corpus is
+#: 12,633; this is generous headroom, not a tight fit, so a parse failure
+#: above it points at a corrupted value, not a legitimate one this bound
+#: rejects.
+MAX_CATALOG_SERVICE_ID = 1_000_000
+
+
+def _parse_catalog_service_id(value: str) -> Optional[int]:
+    """Parse a VehComm ``ServiceId`` property value.
+
+    This is a decimal CarCom catalog key (``T111_Service.id``), not a raw
+    UDS service byte; see the module docstring. A ``0x``-prefixed value is
+    rejected rather than silently reinterpreted, since that prefix would
+    mean the source actually wrote a hex byte, which is a different,
+    unconfirmed situation this function does not guess at.
+    """
+
+    text = value.strip()
+    if not text or not text.isdigit():
         return None
-    service_id = int(text, 16)
-    if 0 <= service_id <= 0xFF:
+    service_id = int(text, 10)
+    if 0 <= service_id <= MAX_CATALOG_SERVICE_ID:
         return service_id
     return None
 
@@ -393,7 +460,7 @@ def _ecu_plans(root: ElementTree.Element) -> Iterable[EcuPlan]:
             continue
         service_ids: List[int] = []
         for value in _field_values(element, "ServiceId"):
-            service_id = _parse_service_id(value)
+            service_id = _parse_catalog_service_id(value)
             if service_id is not None and service_id not in service_ids:
                 service_ids.append(service_id)
         yield EcuPlan(
@@ -497,19 +564,29 @@ def _request_bytes(value: str) -> Optional[bytes]:
         return None
 
 
-def _safe_request_values(plan: EcuPlan, service_id: int) -> Tuple[str, ...]:
-    """Return requests whose leading byte is the same read service."""
+def _safe_request_values(plan: EcuPlan) -> Tuple[Optional[str], ...]:
+    """Classify each literal request by its own leading byte.
 
-    values: List[str] = []
+    Returns one entry per ``plan.requests`` value, in the same order: the
+    stripped request text when its own leading byte is a known read
+    service, or ``None`` otherwise. The position is kept (not compacted)
+    so a caller pairing requests positionally against ``plan.service_ids``
+    still lines up; see :meth:`DiagnosticScript.read_only_requests`.
+
+    There is no catalog key to cross-check a literal request's leading
+    byte against: the catalog key (``ServiceId``) and the raw wire byte a
+    literal ``Request`` string starts with are different number spaces
+    (see the module docstring), so the only valid check here is on the
+    byte that would actually be sent.
+    """
+
+    values: List[Optional[str]] = []
     for value in plan.requests:
         data = _request_bytes(value)
-        if data is None:
-            continue
-        if data[0] != service_id or not is_read_only_service(data[0]):
-            continue
-        stripped = value.strip()
-        if stripped not in values:
-            values.append(stripped)
+        if data is not None and is_read_only_service(data[0]):
+            values.append(value.strip())
+        else:
+            values.append(None)
     return tuple(values)
 
 

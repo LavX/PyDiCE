@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ServiceId is a decimal CarCom catalog key (T111_Service.id), not the
+     raw UDS byte: 1=read_dtc_status, 2=read_ecu_identification. Request is
+     the raw wire byte string actually sent; the two numbers live in
+     different spaces and are not expected to match. See
+     volvo_p3/script_plan.py's module docstring. -->
 <script xmlns:nevis="http://www.volvocars.com/namespaces/processing"
         docno="VCC-227144" VariantId="227144" type="ReadDTCs" xml:lang="en-US"
         nevis:profile="urn:x-nevis:profile:0b00c8af80206a61 urn:x-nevis:profile:0b00c8af80206a68">
@@ -9,8 +14,8 @@
         <property class="String" name="Mode" type="Internal" value="EcuAddress" />
         <property class="Int" name="EcuAddress" type="In" value="17" />
         <property class="Int" name="TesterAddress" type="In" value="0xF1" />
-        <property class="Int" name="ServiceId" type="In" value="19" />
-        <property class="Int" name="ServiceId" type="In" value="22" />
+        <property class="Int" name="ServiceId" type="In" value="1" />
+        <property class="Int" name="ServiceId" type="In" value="2" />
         <property class="String" name="Request" type="In" value="19 02 FF" />
         <property class="String" name="Request" type="In" value="22 F1 90" />
         <property class="Response" name="Result" type="Out" value="" />
@@ -19,7 +24,7 @@
       <node class="Components.VehComm" nodeid="AE05_DIM">
         <property class="String" name="Mode" type="Internal" value="EcuType" />
         <property class="Int" name="EcuType" type="In" value="381101" />
-        <property class="Int" name="ServiceId" type="In" value="19" />
+        <property class="Int" name="ServiceId" type="In" value="1" />
         <property class="String" name="Request" type="In" value="19 02 FF" />
       </node>
       <node class="Components.ListIterator" nodeid="DtcList">

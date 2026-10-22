@@ -47,8 +47,12 @@ def vehcomm(*, address=None, ecu_type=None, service_ids=(0x19,), nodeid="AE01"):
             '<property name="EcuType" type="In" value="{}"/>'.format(ecu_type)
         )
     for service_id in service_ids:
+        # ServiceId is a decimal CarCom catalog key, not a raw UDS byte;
+        # written as plain decimal so round-tripping through XML preserves
+        # the Python int exactly. See volvo_p3.script_plan's module
+        # docstring.
         properties.append(
-            '<property name="ServiceId" type="In" value="{:02X}"/>'.format(
+            '<property name="ServiceId" type="In" value="{}"/>'.format(
                 service_id
             )
         )
