@@ -22,6 +22,7 @@ from volvo_p3.script_runner import (
     run_plan,
 )
 from volvo_p3.script_plan import parse_script_xml
+from volvo_p3.vida_service_templates import READ_ONLY_CATALOG_SERVICES
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -253,7 +254,7 @@ def test_plan_uses_read_only_requests_and_maps_both_address_kinds():
         parse_address_map({"addresses": {"0x11": "0x7E0", "381101": "0x7E1"}}),
     )
 
-    assert [record.service_id for record in plan.records] == [0x19, 0x22, 0x19]
+    assert [record.service_id for record in plan.records] == [1, 2, 1]
     assert [record.can_id for record in plan.records] == [0x7E0, 0x7E0, 0x7E1]
     assert [record.request_hex for record in plan.records] == [
         "19 02 FF",
@@ -313,7 +314,9 @@ def test_named_script_still_drops_every_non_read_service():
           <property name="EcuName" value="ECM" />
           <property name="ServiceId" value="14" />
           <property name="ServiceId" value="27" />
-          <property name="ServiceId" value="19" />
+          <property name="ServiceId" value="1" />
+          <property name="Request" value="14 FF FF" />
+          <property name="Request" value="27 01" />
           <property name="Request" value="19 02 FF" />
         </node>
         </nodes></content></script>"""
@@ -322,7 +325,7 @@ def test_named_script_still_drops_every_non_read_service():
 
     plan = build_run_plan(script, name_map)
 
-    assert [record.service_id for record in plan.records] == [0x19]
+    assert [record.service_id for record in plan.records] == [1]
     assert plan.records[0].status == "planned"
 
 
@@ -331,9 +334,9 @@ def test_plan_drops_every_non_read_service():
         clear_script(), parse_address_map({"17": "0x7E0"})
     )
 
-    assert [record.service_id for record in plan.records] == [0x19]
+    assert [record.service_id for record in plan.records] == [1]
     assert all(
-        record.service_id in {0x01, 0x09, 0x19, 0x22}
+        record.service_id in READ_ONLY_CATALOG_SERVICES
         for record in plan.records
     )
 
@@ -344,7 +347,7 @@ def test_plan_skips_request_without_request_bytes():
         <node class="Components.VehComm">
           <property name="Mode" value="EcuAddress" />
           <property name="EcuAddress" value="17" />
-          <property name="ServiceId" value="19" />
+          <property name="ServiceId" value="1" />
         </node>
         </nodes></content></script>"""
     )
@@ -448,9 +451,9 @@ def test_non_read_service_is_never_sent():
         title=None,
         script_type=None,
         records=(
-            make_record(0x14, b"\x14\xFF\x00", index=1),
-            make_record(0x10, b"\x10\x03", index=2),
-            make_record(0x19, b"\x19\x02\xFF", index=3),
+            make_record(14, b"\x14\xFF\x00", index=1),
+            make_record(10, b"\x10\x03", index=2),
+            make_record(1, b"\x19\x02\xFF", index=3),
         ),
     )
     transport = FakeTransport([dtc_response(0x7E0)])
@@ -484,8 +487,8 @@ def test_transport_refusal_is_recorded_and_run_continues():
         title=None,
         script_type=None,
         records=(
-            make_record(0x22, b"\x22\xF1\x90", index=1),
-            make_record(0x19, b"\x19\x02\xFF", index=2),
+            make_record(2, b"\x22\xF1\x90", index=1),
+            make_record(1, b"\x19\x02\xFF", index=2),
         ),
     )
 

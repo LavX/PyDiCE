@@ -12,6 +12,7 @@ from volvo_p3.script_plan import (
     parse_script_xml,
     parse_script_zip,
 )
+from volvo_p3.vida_service_templates import READ_ONLY_CATALOG_SERVICES
 
 
 FIXTURES = Path(__file__).with_name("fixtures")
@@ -100,29 +101,32 @@ class DiagnosticScriptEcuTests(unittest.TestCase):
     def test_parses_multiple_service_ids_and_requests(self):
         plan = self.script.ecus[0]
 
-        self.assertEqual(plan.service_ids, (0x19, 0x22))
+        self.assertEqual(plan.service_ids, (1, 2))
         self.assertEqual(plan.requests, ("19 02 FF", "22 F1 90"))
         self.assertEqual(plan.responses, ("",))
 
-    def test_service_ids_are_hexadecimal_bytes(self):
-        plan = self.script.ecus[0]
+    def test_service_ids_are_decimal_catalog_keys(self):
+        # ServiceId is a decimal CarCom catalog key (T111_Service.id), not
+        # a raw UDS byte: "19" must parse to 19, not hex 0x19 (25).
+        node = vehcomm(["19"])
+        plan = parse_script_xml(script_with_nodes(node)).ecus[0]
 
-        self.assertIn(0x19, plan.service_ids)
-        self.assertNotIn(19, plan.service_ids)
+        self.assertIn(19, plan.service_ids)
+        self.assertNotIn(0x19, plan.service_ids)
 
     def test_deduplicates_service_ids_and_accepts_prefixed_identifiers(self):
-        node = vehcomm(["19", "19", "0x22"], ecu_address="0x7A")
+        node = vehcomm(["19", "19", "22"], ecu_address="0x7A")
         script = parse_script_xml(script_with_nodes(node))
 
         plan = script.ecus[0]
-        self.assertEqual(plan.service_ids, (0x19, 0x22))
+        self.assertEqual(plan.service_ids, (19, 22))
         self.assertEqual(plan.ecu_address, 0x7A)
 
     def test_ignores_unparseable_service_ids(self):
         node = vehcomm(["19", "ReadDTC", "1FF"])
         script = parse_script_xml(script_with_nodes(node))
 
-        self.assertEqual(script.ecus[0].service_ids, (0x19,))
+        self.assertEqual(script.ecus[0].service_ids, (19,))
 
     def test_ecus_without_service_ids_are_kept(self):
         node = (
@@ -296,7 +300,16 @@ class DiagnosticScriptErrorTests(unittest.TestCase):
 
 
 class DiagnosticScriptSafetyTests(unittest.TestCase):
+    # Raw UDS service bytes (0-255), such as a literal Request's own first
+    # byte. See volvo_p3.script_plan's module docstring: this is a
+    # different number space from a VehComm node's ServiceId catalog key,
+    # covered separately by FORBIDDEN_CATALOG_SERVICES below.
     FORBIDDEN_SERVICES = (0x2E, 0x31, 0x27, 0x10, 0x14, 0x3E)
+
+    # Decimal CarCom catalog ids (T111_Service.id, the ServiceId property
+    # value) with strong evidence of being non-read, from
+    # vida_service_templates.INFERRED_SERVICE_ROLES.
+    FORBIDDEN_CATALOG_SERVICES = (5, 17, 23, 27, 106, 112)
 
     def test_read_services_are_classified_read_only(self):
         for service_id in READ_ONLY_SERVICES:
@@ -313,47 +326,47 @@ class DiagnosticScriptSafetyTests(unittest.TestCase):
 
         requests = script.read_only_requests()
 
-        self.assertEqual([request.service_id for request in requests], [0x19])
+        self.assertEqual([request.service_id for request in requests], [1])
         self.assertEqual(requests[0].request, "19 02 FF")
         self.assertEqual(requests[0].ecu_address, 17)
 
-    def test_read_only_requests_exclude_every_forbidden_service(self):
+    def test_read_only_requests_exclude_every_forbidden_catalog_service(self):
         nodes = "".join(
-            vehcomm(["{:02X}".format(service_id)])
-            for service_id in self.FORBIDDEN_SERVICES
+            vehcomm([str(service_id)])
+            for service_id in self.FORBIDDEN_CATALOG_SERVICES
         )
         nodes += "".join(
-            vehcomm(["{:02X}".format(service_id)])
-            for service_id in sorted(READ_ONLY_SERVICES)
+            vehcomm([str(service_id)])
+            for service_id in sorted(READ_ONLY_CATALOG_SERVICES)
         )
 
         requests = parse_script_xml(script_with_nodes(nodes)).read_only_requests()
 
         exposed = {request.service_id for request in requests}
-        self.assertEqual(exposed, set(READ_ONLY_SERVICES))
-        for service_id in self.FORBIDDEN_SERVICES:
+        self.assertEqual(exposed, set(READ_ONLY_CATALOG_SERVICES))
+        for service_id in self.FORBIDDEN_CATALOG_SERVICES:
             self.assertNotIn(service_id, exposed)
 
-    def test_clear_service_parses_as_0x14_not_0x0e(self):
+    def test_clear_service_parses_as_decimal_14_not_hex(self):
         script = parse_script_xml(fixture_text("script_plan_clear_dtc.xml"))
 
-        self.assertIn(0x14, script.ecus[0].service_ids)
-        self.assertNotIn(0x0E, script.ecus[0].service_ids)
+        self.assertIn(14, script.ecus[0].service_ids)
+        self.assertNotIn(0x14, script.ecus[0].service_ids)
 
     def test_request_bytes_with_a_write_prefix_are_not_emitted(self):
         node = vehcomm(
-            ["19"],
+            ["1"],
             extra='<property name="Request" type="In" value="2E F1 90 00"/>',
         )
 
         request = parse_script_xml(script_with_nodes(node)).read_only_requests()[0]
 
-        self.assertEqual(request.service_id, 0x19)
+        self.assertEqual(request.service_id, 1)
         self.assertIsNone(request.request)
 
     def test_only_the_read_request_is_selected(self):
         node = vehcomm(
-            ["19"],
+            ["1"],
             extra=(
                 '<property name="Request" type="In" value="2E F1 90 00"/>'
                 '<property name="Request" type="In" value="14 FF FF"/>'
@@ -367,7 +380,7 @@ class DiagnosticScriptSafetyTests(unittest.TestCase):
 
     def test_unparseable_request_binding_is_not_emitted(self):
         node = vehcomm(
-            ["19"],
+            ["1"],
             extra='<property name="Request" type="In" value="AE01.Request"/>',
         )
 
@@ -377,7 +390,7 @@ class DiagnosticScriptSafetyTests(unittest.TestCase):
 
     def test_each_read_request_is_exposed(self):
         node = vehcomm(
-            ["22"],
+            ["2"],
             extra=(
                 '<property name="Request" type="In" value="22 F1 90"/>'
                 '<property name="Request" type="In" value="22 F1 91"/>'

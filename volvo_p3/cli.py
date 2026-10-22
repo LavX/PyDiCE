@@ -29,7 +29,12 @@ from .protocol import (
     is_response_to,
     parse_dtc_response,
 )
+from .command_plan import build_command_plan
 from .tui import run_tui
+from .vida_service_templates import (
+    INFERRED_SERVICE_ROLES,
+    extract_service_templates,
+)
 from .diag_catalog import (
     SCHEMA_NAME as DIAG_CATALOG_SCHEMA,
     SCHEMA_VERSION as DIAG_CATALOG_VERSION,
@@ -53,11 +58,10 @@ from .script_runner import (
 )
 from .script_plan import (
     DiagnosticScriptError,
-    classify_service,
-    is_read_only_service,
     parse_script_xml,
     parse_script_zip,
 )
+from .vida_service_templates import classify_catalog_service, is_read_only_catalog_service
 
 
 def add_bus_args(parser: argparse.ArgumentParser) -> None:
@@ -601,6 +605,38 @@ def cmd_diag_catalog(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_vida_service_templates(args: argparse.Namespace) -> int:
+    templates = extract_service_templates(args.image)
+    if args.out:
+        payload = [template.to_dict() for template in templates]
+        args.out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        print(f"wrote {len(templates)} templates to {args.out}")
+        return 0
+
+    if args.index is not None:
+        matches = [t for t in templates if t.index == args.index]
+        if not matches:
+            print(f"no template at index {args.index}", file=sys.stderr)
+            return 1
+        template = matches[0]
+        if args.json:
+            print(json.dumps(template.to_dict(), indent=2, sort_keys=True))
+        else:
+            print(template.raw_xml)
+        return 0
+
+    print(
+        f"{len(templates)} templates recovered (position in LOB storage order, "
+        "NOT a confirmed T111_Service.id; see docs/vida-service-templates.md)"
+    )
+    for template in templates:
+        role = INFERRED_SERVICE_ROLES.get(template.index, "")
+        names = ", ".join(template.request_names()) or "(none)"
+        role_suffix = f"  [guess: {role}]" if role else ""
+        print(f"  {template.index:>4}  request: {names}{role_suffix}")
+    return 0
+
+
 def _format_id(value) -> str:
     return "-" if value is None else "0x{:X}".format(value)
 
@@ -826,19 +862,20 @@ def _decode_script_text(data: bytes, path: Path) -> str:
 
 
 def _blocked_services(script) -> list:
+    # ecu.service_ids holds decimal CarCom catalog keys, not raw UDS
+    # bytes; see volvo_p3.script_plan's module docstring.
     service_ids = sorted(
         {
             service_id
             for ecu in script.ecus
             for service_id in ecu.service_ids
-            if not is_read_only_service(service_id)
+            if not is_read_only_catalog_service(service_id)
         }
     )
     return [
         {
             "service_id": service_id,
-            "service_id_hex": "0x{:02X}".format(service_id),
-            "classification": classify_service(service_id),
+            "classification": classify_catalog_service(service_id),
         }
         for service_id in service_ids
     ]
@@ -866,12 +903,8 @@ def _script_payload(script, path: Path) -> dict:
                 "ecu_name": ecu.ecu_name,
                 "ecu_identifier": ecu.ecu_identifier,
                 "service_ids": list(ecu.service_ids),
-                "service_ids_hex": [
-                    "0x{:02X}".format(service_id)
-                    for service_id in ecu.service_ids
-                ],
                 "service_classifications": [
-                    classify_service(service_id)
+                    classify_catalog_service(service_id)
                     for service_id in ecu.service_ids
                 ],
                 "requests": list(ecu.requests),
@@ -896,7 +929,6 @@ def _script_payload(script, path: Path) -> dict:
                 "ecu_name": request.ecu_name,
                 "ecu_identifier": request.ecu_identifier,
                 "service_id": request.service_id,
-                "service_id_hex": "0x{:02X}".format(request.service_id),
                 "service_name": request.service_name,
                 "request": request.request,
             }
@@ -922,7 +954,7 @@ def _print_script(script, path: Path) -> None:
             f"ecu_type={_format_id(ecu.ecu_type)} tester_address={_format_id(ecu.tester_address)}"
         )
         services = ", ".join(
-            "0x{:02X} {}".format(service_id, classify_service(service_id))
+            "{} {}".format(service_id, classify_catalog_service(service_id))
             for service_id in ecu.service_ids
         )
         print(f"      services: {services or '-'}")
@@ -946,7 +978,7 @@ def _print_script(script, path: Path) -> None:
     print(f"Read-only requests ({len(requests)}):")
     for request in requests:
         print(
-            "  ECU {}  service 0x{:02X} {}  request={}".format(
+            "  ECU {}  service {} {}  request={}".format(
                 _format_id(request.ecu_address),
                 request.service_id,
                 request.service_name,
@@ -958,7 +990,7 @@ def _print_script(script, path: Path) -> None:
     for service in blocked:
         print(
             "  {} {}".format(
-                service["service_id_hex"], service["classification"]
+                service["service_id"], service["classification"]
             )
         )
     print("Execution: none. This command only parses the script.")
@@ -1005,7 +1037,7 @@ def _record_target(record) -> str:
 
 
 def _record_line(record) -> str:
-    return "[{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+    return "[{}] {} -> {}  service {} {}  request={}  {}".format(
         record.index,
         record.source_ecu,
         _record_target(record),
@@ -1311,6 +1343,64 @@ def cmd_diag_run_script(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_diag_command_plan(args: argparse.Namespace) -> int:
+    path = Path(args.script)
+    script = _load_script_plan(path)
+    plan = build_command_plan(script)
+
+    if args.json:
+        print(json.dumps(plan.to_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+
+    print(f"Script: {path}")
+    print(f"Docno: {plan.docno or '-'}")
+    print(f"Title: {plan.title or '-'}")
+    if plan.is_empty:
+        print("No activation or write-shaped nodes found.")
+        return 0
+
+    print(
+        "This plan only inventories what the script could change on the "
+        "car. It builds no requests and sends nothing; see "
+        "docs/vida-service-templates.md for what is still unconfirmed."
+    )
+    if plan.activations:
+        print(f"\nActivations ({len(plan.activations)}):")
+        for step in plan.activations:
+            print(f"  {step.node_id or '-'}  [{step.kind}]")
+            for identifier in step.identifiers:
+                print(
+                    "    ecu={} type={} value={} write={} stop={} parameters={}".format(
+                        identifier.ecu,
+                        identifier.item_type,
+                        identifier.value,
+                        identifier.write,
+                        identifier.stop,
+                        ", ".join(identifier.parameters) or "-",
+                    )
+                )
+    if plan.writes:
+        print(f"\nWrite-shaped VehComm nodes ({len(plan.writes)}):")
+        for write in plan.writes:
+            role = f"  [guess: {write.inferred_role}]" if write.inferred_role else ""
+            gated = "  security-gated (this node)" if write.security_gated else ""
+            print(
+                "  {}  service_id={} ecu_type={} identifier={} value={} "
+                "control_option={} control_mode={}{}{}".format(
+                    write.node_id or "-",
+                    write.service_id,
+                    write.ecu_type,
+                    write.identifier,
+                    write.value,
+                    write.control_option,
+                    write.control_mode,
+                    role,
+                    gated,
+                )
+            )
+    return 0
+
+
 def cmd_script_plan(args: argparse.Namespace) -> int:
     path = Path(args.script)
     script = _load_script_plan(path)
@@ -1515,6 +1605,27 @@ def build_parser() -> argparse.ArgumentParser:
     diag_catalog.add_argument("--json", action="store_true", help="print stable JSON")
     diag_catalog.set_defaults(func=cmd_diag_catalog)
 
+    vida_service_templates = subparsers.add_parser(
+        "vida-service-templates",
+        help="carve T111_Service request/response templates from a VIDA CarComRT image",
+    )
+    vida_service_templates.add_argument(
+        "--image",
+        type=Path,
+        required=True,
+        help="path to CarComRT_Data.MDF, read only",
+    )
+    vida_service_templates.add_argument(
+        "--index",
+        type=int,
+        help="show only the template at this LOB storage position",
+    )
+    vida_service_templates.add_argument(
+        "--out", type=Path, help="write every recovered template as JSON to this path"
+    )
+    vida_service_templates.add_argument("--json", action="store_true", help="print stable JSON")
+    vida_service_templates.set_defaults(func=cmd_vida_service_templates)
+
     diag_report = subparsers.add_parser(
         "diag-report", help="build read-only diagnostic views from a saved scan report"
     )
@@ -1546,6 +1657,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     script_plan.add_argument("--json", action="store_true", help="print stable JSON")
     script_plan.set_defaults(func=cmd_script_plan)
+
+    command_plan = subparsers.add_parser(
+        "diag-command-plan",
+        help=(
+            "inventory the actuator/activation and write-shaped nodes in a "
+            "diagnostic script; builds no requests, sends nothing"
+        ),
+    )
+    command_plan.add_argument(
+        "--script", type=Path, required=True, help="diagnostic script ZIP or XML file"
+    )
+    command_plan.add_argument("--json", action="store_true", help="print stable JSON")
+    command_plan.set_defaults(func=cmd_diag_command_plan)
 
     diag_run = subparsers.add_parser(
         "diag-run-script",

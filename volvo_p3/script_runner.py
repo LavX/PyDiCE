@@ -44,11 +44,13 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .protocol import VolvoFrame
 from .script_plan import (
-    NON_READ_SERVICES,
-    READ_SERVICE_NAMES,
     ReadRequest,
     DiagnosticScript,
     is_read_only_service,
+)
+from .vida_service_templates import (
+    INFERRED_SERVICE_ROLES,
+    is_read_only_catalog_service,
 )
 
 
@@ -630,9 +632,13 @@ class LogicalAddress:
 class RequestRecord:
     """One request and, after a run, its outcome.
 
-    ``request_bytes`` is the UDS payload, not the ISO-TP frame. ``status`` is
-    one of :data:`STATUSES`. ``transmitted`` is True only after the transport
-    accepted the frame.
+    ``service_id`` is the script's ``ServiceId`` property: a decimal CarCom
+    catalog key (``T111_Service.id``), not a raw UDS service byte. The
+    actual wire byte, when there is one, is ``request_bytes[0]``; see
+    ``volvo_p3.script_plan``'s module docstring for why these are different
+    number spaces. ``request_bytes`` is the UDS payload, not the ISO-TP
+    frame. ``status`` is one of :data:`STATUSES`. ``transmitted`` is True
+    only after the transport accepted the frame.
     """
 
     index: int
@@ -657,11 +663,16 @@ class RequestRecord:
 
     @property
     def service_name(self) -> str:
-        if self.service_id in READ_SERVICE_NAMES:
-            return READ_SERVICE_NAMES[self.service_id]
-        if self.service_id in NON_READ_SERVICES:
-            return NON_READ_SERVICES[self.service_id]
-        return "unknown"
+        """A human-readable label for ``service_id`` (a catalog key).
+
+        From ``vida_service_templates.INFERRED_SERVICE_ROLES``, a working
+        hypothesis (see that module's docstring), so this name is advisory,
+        not confirmed. ``"unknown"`` means the catalog key has no recorded
+        role, not that it is unsafe; see ``is_read_only_catalog_service``
+        for the actual read/not-read gate.
+        """
+
+        return INFERRED_SERVICE_ROLES.get(self.service_id, "unknown")
 
     @property
     def request_hex(self) -> str:
@@ -688,7 +699,6 @@ class RequestRecord:
             "ecu_name": self.ecu_name,
             "ecu_identifier": self.ecu_identifier,
             "service_id": self.service_id,
-            "service_hex": "0x{:02X}".format(self.service_id),
             "service_name": self.service_name,
             "request": self.request_hex,
             "request_bytes": list(self.request_bytes),
@@ -804,10 +814,10 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
             detail_parts.append(
                 byte_note or "script supplied no request bytes"
             )
-        elif not is_read_only_service(request.service_id):
+        elif not is_read_only_catalog_service(request.service_id):
             status = STATUS_SKIPPED_NON_READ
             detail_parts.append(
-                "service 0x{:02X} is not a read service".format(
+                "ServiceId {} is not a known read service".format(
                     request.service_id
                 )
             )
@@ -818,12 +828,11 @@ def build_run_plan(script: DiagnosticScript, address_map: AddressMap) -> RunPlan
                     request_bytes[0]
                 )
             )
-        elif request_bytes[0] != request.service_id:
-            status = STATUS_SKIPPED_UNSUPPORTED
-            detail_parts.append(
-                "request service byte 0x{:02X} disagrees with declared "
-                "service 0x{:02X}".format(request_bytes[0], request.service_id)
-            )
+        # There is no valid way to cross-check the request's own leading
+        # byte (a raw UDS service byte) against request.service_id (a
+        # decimal CarCom catalog key): they are different number spaces,
+        # see volvo_p3.script_plan's module docstring. The two checks
+        # above already gate on each number independently.
         elif match.can_id is None:
             status = STATUS_SKIPPED_UNMAPPED
             detail_parts.append(
@@ -928,12 +937,12 @@ def run_plan(
         if record.status != STATUS_PLANNED:
             records.append(record)
             continue
-        if not is_read_only_service(record.service_id):
+        if not is_read_only_catalog_service(record.service_id):
             records.append(
                 replace(
                     record,
                     status=STATUS_SKIPPED_NON_READ,
-                    detail="service 0x{:02X} is not a read service".format(
+                    detail="ServiceId {} is not a known read service".format(
                         record.service_id
                     ),
                 )
@@ -951,18 +960,10 @@ def run_plan(
                 )
             )
             continue
-        if record.request_bytes[0] != record.service_id:
-            records.append(
-                replace(
-                    record,
-                    status=STATUS_SKIPPED_UNSUPPORTED,
-                    detail="request service byte 0x{:02X} disagrees with "
-                    "declared service 0x{:02X}".format(
-                        record.request_bytes[0], record.service_id
-                    ),
-                )
-            )
-            continue
+        # No valid cross-check between record.request_bytes[0] (a raw UDS
+        # byte) and record.service_id (a decimal CarCom catalog key)
+        # exists; see volvo_p3.script_plan's module docstring. The two
+        # checks above already gate on each number independently.
         if record.can_id is None:
             records.append(
                 replace(
@@ -1041,7 +1042,7 @@ def run_plan(
             response = _receive_response(
                 transport,
                 request_id=record.can_id,
-                service_id=record.service_id,
+                service_id=record.request_bytes[0],
                 request_bytes=record.request_bytes,
                 timeout=timeout,
             )
@@ -1087,7 +1088,7 @@ def run_plan(
                 response_bytes=response.frame_data,
                 response_payload=response.payload,
                 decoded=decode_response_payload(
-                    record.service_id, response.payload
+                    record.request_bytes[0], response.payload
                 ),
             )
         )
@@ -1132,6 +1133,11 @@ def _receive_response(
     timeout: float,
 ) -> Optional[_Response]:
     """Collect one response, ignoring unrelated frames and assembling ISO-TP.
+
+    ``service_id`` here is the raw UDS service byte actually sent
+    (``request_bytes[0]``), not a script's catalog ``ServiceId``; the
+    positive-response offset (``+0x40``) and NRC echo are both defined on
+    that raw byte. See ``volvo_p3.script_plan``'s module docstring.
 
     Responses are matched on UDS bytes, not on a guessed response identifier.
     A single frame or a first-frame/consecutive-frame transfer is supported.
@@ -1281,6 +1287,10 @@ def decode_response_payload(
     service_id: int, payload: bytes
 ) -> Dict[str, Any]:
     """Decode a response where the format is unambiguous.
+
+    ``service_id`` is the raw UDS service byte that was actually sent
+    (``request_bytes[0]``), not a script's catalog ``ServiceId``; see
+    ``volvo_p3.script_plan``'s module docstring for why those differ.
 
     Service 0x19 subfunction 0x02 is decoded into UDS DTC records. Everything
     else, including other 0x19 subfunctions, is preserved as raw payload bytes

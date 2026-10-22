@@ -38,10 +38,10 @@ if __package__ in (None, ""):
     from volvo_p3.script_plan import (
         DiagnosticScript,
         DiagnosticScriptError,
-        classify_service,
         parse_script_xml,
         parse_script_zip,
     )
+    from volvo_p3.vida_service_templates import classify_catalog_service
     from volvo_p3.script_runner import (
         STATUS_ERROR,
         STATUS_RESPONSE,
@@ -75,10 +75,10 @@ else:
     from .script_plan import (
         DiagnosticScript,
         DiagnosticScriptError,
-        classify_service,
         parse_script_xml,
         parse_script_zip,
     )
+    from .vida_service_templates import classify_catalog_service
     from .script_runner import (
         STATUS_ERROR,
         STATUS_RESPONSE,
@@ -560,7 +560,7 @@ def _format_script_plan(script: DiagnosticScript, path: Path) -> list[str]:
     lines.append("ECUs: {}".format(len(script.ecus)))
     for plan in script.ecus:
         services = ", ".join(
-            "0x{:02X}({})".format(service_id, classify_service(service_id))
+            "{}({})".format(service_id, classify_catalog_service(service_id))
             for service_id in plan.service_ids
         ) or "(none)"
         lines.append(
@@ -581,7 +581,7 @@ def _format_script_plan(script: DiagnosticScript, path: Path) -> list[str]:
     )
     for request in requests:
         lines.append(
-            "  ecu={} service=0x{:02X} {} request={}".format(
+            "  ecu={} service={} {} request={}".format(
                 _diag_hex(request.ecu_address),
                 request.service_id,
                 request.service_name,
@@ -594,14 +594,14 @@ def _format_script_plan(script: DiagnosticScript, path: Path) -> list[str]:
             service_id
             for plan in script.ecus
             for service_id in plan.service_ids
-            if classify_service(service_id) != "read_only"
+            if classify_catalog_service(service_id) != "read_only"
         }
     )
     if dropped:
         lines.append(
             "dropped services: {}".format(
                 ", ".join(
-                    "0x{:02X}({})".format(service_id, classify_service(service_id))
+                    "{}({})".format(service_id, classify_catalog_service(service_id))
                     for service_id in dropped
                 )
             )
@@ -806,7 +806,7 @@ def format_script_run_view(view: ScriptRunView) -> list[str]:
 
     lines.append("read-only requests: {}".format(len(view.plan.records)))
     for record in view.plan.records:
-        line = "  [{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+        line = "  [{}] {} -> {}  service {} {}  request={}  {}".format(
             record.index,
             record.source_ecu,
             _script_record_target(record),
@@ -833,14 +833,14 @@ def format_script_run_view(view: ScriptRunView) -> list[str]:
             service_id
             for ecu in view.script.ecus
             for service_id in ecu.service_ids
-            if classify_service(service_id) != "read_only"
+            if classify_catalog_service(service_id) != "read_only"
         }
     )
     if dropped:
         lines.append(
             "dropped services: {}".format(
                 ", ".join(
-                    "0x{:02X}({})".format(service_id, classify_service(service_id))
+                    "{}({})".format(service_id, classify_catalog_service(service_id))
                     for service_id in dropped
                 )
             )
@@ -875,7 +875,7 @@ def format_script_run_result(result: RunResult) -> list[str]:
     if result.aborted:
         lines.append("aborted: {}".format(result.abort_reason))
     for record in result.records:
-        line = "  [{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+        line = "  [{}] {} -> {}  service {} {}  request={}  {}".format(
             record.index,
             record.source_ecu,
             _script_record_target(record),
