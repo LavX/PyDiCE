@@ -147,6 +147,10 @@ request IDs is ambiguous and stays unmapped; a missing name stays unmapped too.
 Both cases are reported with the profile path. A `--address-map` entry still
 wins, because numeric lookup runs before name lookup.
 
+`tools/recover_address_map.py` builds a conservative map from a saved module
+profile and recovered script plans. Its evidence, selection policy and blockers
+are recorded in `docs/diag-address-map.md`.
+
 ## TUI
 
 The TUI has a `Service Data` menu with:
