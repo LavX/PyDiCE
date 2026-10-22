@@ -22,6 +22,7 @@ COMPRESSED_CATALOG = FIXTURES / "diag_catalog.json.gz"
 SCRIPT_XML = FIXTURES / "script_plan_read_dtc.xml"
 SCRIPT_CLEAR = FIXTURES / "script_plan_clear_dtc.xml"
 SCRIPT_MALFORMED = FIXTURES / "script_plan_malformed.xml"
+SCRIPT_NAMED = FIXTURES / "script_plan_named.xml"
 SCAN_PROFILE = FIXTURES / "my-car-complete.json"
 
 
@@ -420,6 +421,21 @@ def test_script_json_reports_plan_and_never_executes(capsys):
     ]
     assert payload["blocked_services"] == []
     assert payload["executed"] is False
+
+
+def test_script_json_exposes_ecu_names_and_identifiers(capsys):
+    status = cmd_script_plan(script_args(SCRIPT_NAMED, json=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert status == 0
+    assert payload["ecus"][0]["ecu_name"] == "ECM"
+    assert payload["ecus"][0]["ecu_identifier"] == "AE01_ECM"
+    assert payload["ecus"][1]["ecu_name"] == "Driver Information Module"
+    assert payload["ecus"][1]["ecu_identifier"] == "DIM"
+    assert payload["read_only_requests"][0]["ecu_name"] == "ECM"
+    assert payload["read_only_requests"][0]["ecu_identifier"] == "AE01_ECM"
+    assert payload["read_only_requests"][2]["ecu_name"] == "ABS"
+    assert payload["read_only_requests"][2]["ecu_identifier"] is None
 
 
 def test_script_safety_filter_drops_write_services(capsys):

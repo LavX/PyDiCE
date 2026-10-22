@@ -112,6 +112,14 @@ python3 -m volvo_p3.cli diag-run-script \
   --address-map reports/address_map.json
 ```
 
+Plan one by matching the script's ECU names to a saved module profile:
+
+```sh
+python3 -m volvo_p3.cli diag-run-script \
+  --script path/to/script.zip \
+  --profile reports/my-car-complete.json
+```
+
 Add `--execute` to send the planned read requests through the native DiCE
 transport. Without it, the command prints the plan and sends nothing.
 
@@ -131,6 +139,14 @@ physical request ID:
 
 Requests without a mapping are skipped and reported. They are never guessed.
 
+`--profile` uses the `modules` list a saved scan already carries. Each script
+`EcuName`, or its `EcuIdentifier` when the name does not match, is compared
+with a module name after case, whitespace and punctuation are folded. Only an
+exact folded match is used. A name claimed by two modules with different
+request IDs is ambiguous and stays unmapped; a missing name stays unmapped too.
+Both cases are reported with the profile path. A `--address-map` entry still
+wins, because numeric lookup runs before name lookup.
+
 `tools/recover_address_map.py` builds a conservative map from a saved module
 profile and recovered script plans. Its evidence, selection policy and blockers
 are recorded in `docs/diag-address-map.md`.
@@ -140,14 +156,22 @@ are recorded in `docs/diag-address-map.md`.
 The TUI has a `Service Data` menu with:
 
 - Load Catalog
+- Live DTC Read
 - DTC Overview
 - Fault Trace
 - Network Status
 - Script Plan
+- Run Script
 
 The DTC and network views read a saved scan report. They do not open the
 adapter themselves. The default catalog path is `data/diag_catalog.json.xz`;
 the Load Catalog field accepts any plain or compressed catalog suffix.
+
+`Run Script` takes the script path, an optional profile path, an optional
+address map path, a per-request timeout and an explicit `Execute (yes/no)`
+field. The field defaults to `no`, so the action only shows the plan, the name
+matches, and every unmapped entry. Typing `yes` sends the same filtered reads
+through the native transport; the read-only filter is unchanged.
 
 ## Safety
 
@@ -158,7 +182,11 @@ unchanged for the existing commands.
 
 ## Limits
 
-- `T121_Config` is empty in this snapshot, so the logical-to-CAN map is manual.
+- `T121_Config` is empty in this snapshot, so the logical-to-CAN map is manual
+  or name-matched against a saved profile.
+- Profile name matching is only as good as the profile labels. Placeholder
+  names such as `CAN_730` cannot match a script ECU name, and a name that two
+  modules claim stays unmapped.
 - The script store is only partly recoverable: 89,229 headers were carved, but
   43,757 streams did not inflate and 36,899 inflated streams did not parse as
   XML. Damaged bodies are counted, not claimed as complete coverage.

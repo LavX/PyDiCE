@@ -66,6 +66,7 @@ python3 -m volvo_p3.cli diag-report --scan reports/dice-scan-TIMESTAMP.json --ca
 sudo python3 -m volvo_p3.cli dice-scan --discover --diag-catalog data/diag_catalog.json.xz
 python3 -m volvo_p3.cli diag-script --script path/to/script.zip
 python3 -m volvo_p3.cli diag-run-script --script path/to/script.zip --address-map reports/address_map.json
+python3 -m volvo_p3.cli diag-run-script --script path/to/script.zip --profile reports/my-car-complete.json
 ```
 
 The catalog loader and writer select gzip, bzip2 or xz from the suffix
@@ -77,8 +78,13 @@ dump tree. `--dump-archive` and `tools/pack_diag_dump.py` write one `.tar.gz`,
 
 `diag-run-script` only plans by default. `--execute` sends the planned read
 services through the native DiCE transport; non-read services are never sent.
-The logical-address map is explicit because the shipped `T121_Config` is empty.
-See [diagnostics-data.md](docs/diagnostics-data.md).
+Addressing is explicit because the shipped `T121_Config` is empty. Supply
+`--address-map` directly, or let `--profile` match the script's `EcuName` or
+`EcuIdentifier` to the module names in a saved scan; only exact normalized
+matches are used, and ambiguous or missing names are reported and left
+unmapped. An explicit `--address-map` entry still wins. The TUI exposes the
+same run under `Service Data > Run Script`, plan-only unless the execute field
+is set to `yes`. See [diagnostics-data.md](docs/diagnostics-data.md).
 
 The earlier reverse-engineering notes below are historical.
 

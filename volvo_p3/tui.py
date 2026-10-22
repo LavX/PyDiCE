@@ -42,6 +42,18 @@ if __package__ in (None, ""):
         parse_script_xml,
         parse_script_zip,
     )
+    from volvo_p3.script_runner import (
+        STATUS_ERROR,
+        STATUS_RESPONSE,
+        AddressMap,
+        AddressMapError,
+        NameMapReport,
+        RunPlan,
+        RunResult,
+        build_run_plan,
+        load_profile_name_map,
+        parse_address_map,
+    )
 else:
     from .can_transport import CanBusConfig, PythonCanTransport
     from .diagnostics import DiagnosticReport, build_report as build_diagnostic_report
@@ -66,6 +78,18 @@ else:
         classify_service,
         parse_script_xml,
         parse_script_zip,
+    )
+    from .script_runner import (
+        STATUS_ERROR,
+        STATUS_RESPONSE,
+        AddressMap,
+        AddressMapError,
+        NameMapReport,
+        RunPlan,
+        RunResult,
+        build_run_plan,
+        load_profile_name_map,
+        parse_address_map,
     )
 
 
@@ -622,6 +646,275 @@ def build_script_plan_view(path: str | os.PathLike[str]) -> list[str]:
     return _format_script_plan(script, script_path)
 
 
+DEFAULT_SCRIPT_TIMEOUT = DEFAULT_LIVE_TIMEOUT
+DEFAULT_SCRIPT_EXECUTE = "no"
+
+
+def _script_bool(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+@dataclass(frozen=True)
+class ScriptRunView:
+    """One planned script run, before any frame is sent."""
+
+    script_path: Path
+    script: DiagnosticScript
+    address_map: AddressMap
+    plan: RunPlan
+    timeout: float
+    execute: bool
+    map_path: Path | None = None
+    profile_path: Path | None = None
+    name_report: NameMapReport | None = None
+
+
+def build_script_run_view(
+    script_path: str | os.PathLike[str],
+    profile_path: str | os.PathLike[str] | None = "",
+    address_map_path: str | os.PathLike[str] | None = "",
+    timeout: str | float | None = DEFAULT_SCRIPT_TIMEOUT,
+    execute: bool = False,
+) -> ScriptRunView:
+    """Load a script and its optional maps, then build a read-only plan.
+
+    A supplied address map wins over profile name matches because numeric
+    lookup happens first. With neither map supplied this raises ``ValueError``;
+    nothing is guessed.
+    """
+
+    text = str(script_path).strip()
+    if not text:
+        raise ValueError("enter a diagnostic script ZIP or XML path")
+    script_file = Path(text)
+    if not script_file.is_file():
+        raise FileNotFoundError("script not found: {}".format(script_file))
+    data = script_file.read_bytes()
+    script = _parse_script_plan(data, script_file.suffix.lower())
+
+    map_text = str(address_map_path or "").strip()
+    profile_text = str(profile_path or "").strip()
+    if not map_text and not profile_text:
+        raise ValueError("enter a saved profile path, an address map path, or both")
+
+    address_map = AddressMap()
+    map_file: Path | None = None
+    if map_text:
+        map_file = Path(map_text)
+        if not map_file.is_file():
+            raise FileNotFoundError("address map not found: {}".format(map_file))
+        try:
+            document = json.loads(map_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "address map is not valid JSON: {}: {}".format(map_file, exc)
+            ) from exc
+        try:
+            address_map = parse_address_map(document)
+        except AddressMapError as exc:
+            raise ValueError(
+                "invalid address map {}: {}".format(map_file, exc)
+            ) from exc
+
+    profile_file: Path | None = None
+    name_report: NameMapReport | None = None
+    if profile_text:
+        profile_file = Path(profile_text)
+        name_map, name_report = load_profile_name_map(script, profile_file)
+        address_map = address_map.merged_with(name_map)
+
+    timeout_value = float(_timeout_text(timeout))
+    plan = build_run_plan(script, address_map)
+    return ScriptRunView(
+        script_path=script_file,
+        script=script,
+        address_map=address_map,
+        plan=plan,
+        timeout=timeout_value,
+        execute=bool(execute),
+        map_path=map_file,
+        profile_path=profile_file,
+        name_report=name_report,
+    )
+
+
+def _script_record_target(record: Any) -> str:
+    return (
+        "unmapped"
+        if record.can_id is None
+        else "0x{:03X}".format(record.can_id)
+    )
+
+
+def _script_logical_value(item: Any) -> str:
+    if item.value is None:
+        return "unknown"
+    if item.kind == "ecu_address":
+        return _diag_hex(item.value)
+    return str(item.value)
+
+
+def format_script_run_view(view: ScriptRunView) -> list[str]:
+    """Format the plan, name matching and unmapped entries as log lines."""
+
+    if not isinstance(view, ScriptRunView):
+        raise TypeError("view must be a ScriptRunView")
+
+    lines = [
+        "script: {}".format(view.script_path),
+        "docno: {}".format(view.plan.docno or "(none)"),
+        "title: {}".format(view.plan.title or "(none)"),
+        "type: {}".format(view.plan.script_type or "(none)"),
+        "timeout: {:g}s".format(view.timeout),
+    ]
+    if view.map_path is not None:
+        lines.append(
+            "address map: {} ({} numeric entries)".format(
+                view.map_path,
+                len(view.address_map),
+            )
+        )
+    if view.profile_path is not None and view.name_report is not None:
+        counts = view.name_report.counts()
+        lines.append(
+            "profile: {} (matched {}, ambiguous {}, missing {}, unnamed {})".format(
+                view.profile_path,
+                counts["matched"],
+                counts["ambiguous"],
+                counts["missing"],
+                counts["unnamed"],
+            )
+        )
+        for entry in view.name_report.matched:
+            lines.append(
+                "  matched {} {} -> 0x{:03X}".format(
+                    entry.field, entry.value, entry.can_id
+                )
+            )
+        for entry in view.name_report.ambiguous:
+            lines.append(
+                "  ambiguous {} {}: profile names {}".format(
+                    entry.field, entry.value, ", ".join(entry.profile_names)
+                )
+            )
+        for entry in view.name_report.missing:
+            lines.append(
+                "  no profile module named {} ({})".format(
+                    entry.value, entry.field
+                )
+            )
+
+    lines.append("read-only requests: {}".format(len(view.plan.records)))
+    for record in view.plan.records:
+        line = "  [{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+            record.index,
+            record.source_ecu,
+            _script_record_target(record),
+            record.service_id,
+            record.service_name,
+            record.request_hex or "(none)",
+            record.status,
+        )
+        if record.detail:
+            line += "  ({})".format(record.detail)
+        lines.append(line)
+
+    if view.plan.unmapped:
+        lines.append("unmapped: {}".format(len(view.plan.unmapped)))
+        for item in view.plan.unmapped:
+            lines.append(
+                "  {} {} ({})".format(
+                    item.kind, _script_logical_value(item), item.source_ecu
+                )
+            )
+
+    dropped = sorted(
+        {
+            service_id
+            for ecu in view.script.ecus
+            for service_id in ecu.service_ids
+            if classify_service(service_id) != "read_only"
+        }
+    )
+    if dropped:
+        lines.append(
+            "dropped services: {}".format(
+                ", ".join(
+                    "0x{:02X}({})".format(service_id, classify_service(service_id))
+                    for service_id in dropped
+                )
+            )
+        )
+
+    lines.append(
+        "mode: execute"
+        if view.execute
+        else "mode: plan only; no CAN frames were sent"
+    )
+    return lines
+
+
+def format_script_run_result(result: RunResult) -> list[str]:
+    """Format one live run's per-request outcomes."""
+
+    if not isinstance(result, RunResult):
+        raise TypeError("result must be a RunResult")
+
+    counts = result.counts
+    lines = [
+        "run: transmitted={} responses={} timeouts={} errors={} skipped={}".format(
+            counts["transmitted"],
+            counts[STATUS_RESPONSE],
+            counts["timeout"],
+            counts[STATUS_ERROR],
+            counts["skipped_unmapped"]
+            + counts["skipped_non_read"]
+            + counts["skipped_unsupported"],
+        )
+    ]
+    if result.aborted:
+        lines.append("aborted: {}".format(result.abort_reason))
+    for record in result.records:
+        line = "  [{}] {} -> {}  service 0x{:02X} {}  request={}  {}".format(
+            record.index,
+            record.source_ecu,
+            _script_record_target(record),
+            record.service_id,
+            record.service_name,
+            record.request_hex or "(none)",
+            record.status,
+        )
+        if record.detail and record.status != STATUS_RESPONSE:
+            line += "  ({})".format(record.detail)
+        lines.append(line)
+        if record.status != STATUS_RESPONSE:
+            continue
+        lines.append(
+            "      response_id={} payload={}".format(
+                "-"
+                if record.response_id is None
+                else "0x{:03X}".format(record.response_id),
+                record.response_payload_hex or "(empty)",
+            )
+        )
+        decoded = record.decoded or {}
+        if decoded.get("kind") == "dtc_list" and decoded.get("status") == "ok":
+            for dtc in decoded["dtcs"]:
+                lines.append(
+                    "      {}-{:02X} status=0x{:02X}".format(
+                        dtc["code"], dtc["failure_type"], dtc["status_byte"]
+                    )
+                )
+        elif decoded.get("kind") == "negative_response":
+            lines.append(
+                "      negative response nrc={}{}".format(
+                    decoded.get("nrc_hex") or "-",
+                    " " + decoded["nrc_name"] if decoded.get("nrc_name") else "",
+                )
+            )
+    return lines
+
+
 class VolvoTuiApp:
     def __init__(self) -> None:
         self.transport = CanBusConfig("socketcan", "can0", None)
@@ -811,6 +1104,35 @@ class VolvoTuiApp:
                         "Parse a diagnostic script ZIP or XML into a read-only plan.",
                         self._script_plan_plan,
                         (FieldSpec("script_plan", "Script ZIP or XML", ""),),
+                    ),
+                    ActionSpec(
+                        "Run Script",
+                        "Plan or send a script's read-only requests, "
+                        "optionally matching saved profile module names.",
+                        self._script_run,
+                        (
+                            FieldSpec("script_run_script", "Script ZIP or XML", ""),
+                            FieldSpec(
+                                "script_run_profile",
+                                "Saved profile JSON (optional)",
+                                default_live_diag_profile_path(),
+                            ),
+                            FieldSpec(
+                                "script_run_map",
+                                "Address map JSON (optional)",
+                                "",
+                            ),
+                            FieldSpec(
+                                "script_run_timeout",
+                                "Timeout per request in seconds",
+                                DEFAULT_SCRIPT_TIMEOUT,
+                            ),
+                            FieldSpec(
+                                "script_run_execute",
+                                "Execute (yes/no)",
+                                DEFAULT_SCRIPT_EXECUTE,
+                            ),
+                        ),
                     ),
                 ),
             ),
@@ -1286,6 +1608,38 @@ class VolvoTuiApp:
 
     def _script_plan_plan(self, values: dict[str, str]) -> list[str]:
         return build_script_plan_view(values.get("script_plan", ""))
+
+    def _execute_script_plan(self, plan: RunPlan, timeout: float) -> RunResult:
+        if __package__ in (None, ""):
+            from volvo_p3.cli import run_script_native
+        else:
+            from .cli import run_script_native
+        return run_script_native(plan, timeout=timeout)
+
+    def _script_run(self, values: dict[str, str]) -> list[str]:
+        try:
+            view = build_script_run_view(
+                values.get("script_run_script", ""),
+                values.get("script_run_profile", ""),
+                values.get("script_run_map", ""),
+                values.get("script_run_timeout", DEFAULT_SCRIPT_TIMEOUT),
+                _script_bool(
+                    values.get("script_run_execute", DEFAULT_SCRIPT_EXECUTE)
+                ),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ["error: {}".format(exc)]
+
+        lines = format_script_run_view(view)
+        if not view.execute:
+            return lines
+        try:
+            result = self._execute_script_plan(view.plan, view.timeout)
+        except (OSError, RuntimeError, ValueError) as exc:
+            lines.append("error: script run failed: {}".format(exc))
+            return lines
+        lines.extend(format_script_run_result(result))
+        return lines
 
     def _draw(self, stdscr: curses.window) -> None:
         stdscr.erase()

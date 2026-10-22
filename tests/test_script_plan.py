@@ -138,6 +138,41 @@ class DiagnosticScriptEcuTests(unittest.TestCase):
         self.assertEqual(plan.service_ids, ())
         self.assertEqual(plan.requests, ())
 
+    def test_parses_ecu_name_and_identifier_when_present(self):
+        script = parse_script_xml(fixture_text("script_plan_named.xml"))
+
+        ecm, dim = script.ecus[0], script.ecus[1]
+        self.assertEqual(ecm.ecu_name, "ECM")
+        self.assertEqual(ecm.ecu_identifier, "AE01_ECM")
+        self.assertEqual(dim.ecu_name, "Driver Information Module")
+        self.assertEqual(dim.ecu_identifier, "DIM")
+
+        requests = script.read_only_requests()
+        self.assertEqual(requests[0].ecu_name, "ECM")
+        self.assertEqual(requests[0].ecu_identifier, "AE01_ECM")
+
+    def test_ecu_name_and_identifier_are_none_when_absent(self):
+        plan = self.script.ecus[0]
+
+        self.assertIsNone(plan.ecu_name)
+        self.assertIsNone(plan.ecu_identifier)
+        self.assertIsNone(self.script.read_only_requests()[0].ecu_name)
+
+    def test_parses_ecu_name_from_a_direct_child(self):
+        node = (
+            '<node class="Components.VehComm" nodeid="AE01">'
+            '<property name="Mode" value="EcuName"/>'
+            '<EcuName>ECM</EcuName>'
+            '<EcuIdentifier>AE01_ECM</EcuIdentifier>'
+            '<property name="ServiceId" value="19"/>'
+            "</node>"
+        )
+
+        plan = parse_script_xml(script_with_nodes(node)).ecus[0]
+
+        self.assertEqual(plan.ecu_name, "ECM")
+        self.assertEqual(plan.ecu_identifier, "AE01_ECM")
+
 
 class DiagnosticScriptDtcTests(unittest.TestCase):
     def test_parses_dtc_list_bindings(self):

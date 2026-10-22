@@ -1,0 +1,10 @@
+{
+  "name": "synthetic named profile",
+  "modules": [
+    {"name": "ecm", "request_id": "0x7E0", "response_id": "0x7E8"},
+    {"name": "D.I.M.", "request_id": "0x720", "response_id": "0x728"},
+    {"name": "GWM", "request_id": "0x730", "response_id": "0x738"},
+    {"name": "G.W.M", "request_id": "0x731", "response_id": "0x739"},
+    {"name": "CEM", "request_id": "0x726", "response_id": "0x72E"}
+  ]
+}
