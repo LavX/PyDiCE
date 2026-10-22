@@ -131,6 +131,10 @@ physical request ID:
 
 Requests without a mapping are skipped and reported. They are never guessed.
 
+`tools/recover_address_map.py` builds a conservative map from a saved module
+profile and recovered script plans. Its evidence, selection policy and blockers
+are recorded in `docs/diag-address-map.md`.
+
 ## TUI
 
 The TUI has a `Service Data` menu with:
